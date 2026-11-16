@@ -1,0 +1,588 @@
+import { View, div } from "gpui-kit";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { spaces, panes, focused, exec, hc, theme, checking, shared, setShared, props } from "herdr";
+
+const PY_INSPECT = `
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+def live_agy_set():
+    uuid_re = re.compile(r"(?:presence|conversations)/([0-9a-f-]{36})\\.(?:lock|db)$")
+    res_set = set()
+    proc_dir = Path("/proc")
+    if proc_dir.is_dir():
+        for p in proc_dir.iterdir():
+            if not p.name.isdigit(): continue
+            try:
+                if (p / "comm").read_text("utf-8", errors="replace").strip() != "agy": continue
+                for fd in (p / "fd").iterdir():
+                    try:
+                        m = uuid_re.search(os.readlink(fd))
+                        if m: res_set.add(m.group(1))
+                    except Exception: pass
+            except Exception: pass
+        return res_set
+    try:
+        pids = subprocess.check_output(["pgrep", "-x", "agy"], text=True, timeout=1.5).split()
+        if pids:
+            out = subprocess.check_output(["lsof", "-a", "-p", ",".join(pids), "-Fn"], text=True, timeout=2.0)
+            for line in out.splitlines():
+                if line.startswith("n"):
+                    m = uuid_re.search(line[1:])
+                    if m: res_set.add(m.group(1))
+    except Exception:
+        pass
+    return res_set
+
+def read_json(p):
+    try: return json.loads(p.read_text("utf-8"))
+    except Exception: return None
+
+def is_safe_id(val):
+    return bool(val) and "/" not in val and "\\\\" not in val and ".." not in val
+
+def tail_jsonl(p, limit=30):
+    if not p.is_file(): return []
+    out = []
+    try:
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 131072))
+            raw = f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return []
+    for line in raw.splitlines()[-limit:]:
+        line = line.strip()
+        if not line: continue
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict): out.append(obj)
+        except Exception: pass
+    return out
+
+def sum_step(s):
+    tools = [str(tc.get("name")) for tc in (s.get("tool_calls") or []) if isinstance(tc, dict) and tc.get("name")]
+    full = str(s.get("content") or "").strip()
+    prev = full.replace("\\n", " ")
+    if len(prev) > 140: prev = prev[:137] + "..."
+    return {"step": s.get("step_index"), "type": s.get("type"), "status": s.get("status"), "tools": tools, "preview": prev, "full": full[:1500]}
+
+env_brain = os.environ.get("AGY_BRAIN_ROOT")
+brain = Path(env_brain) if env_brain else (Path.home() / ".gemini/antigravity-cli/brain")
+agy_root = brain.parent
+sel = sys.argv[1] if len(sys.argv) > 1 and is_safe_id(sys.argv[1]) else None
+if not brain.is_dir():
+    print(json.dumps({"conversations": [], "selected": None}))
+    sys.exit(0)
+
+# Pre-filter by directory mtime so we don't parse hundreds of old brain dirs
+candidates = [d for d in brain.iterdir() if d.is_dir() and (d / ".system_generated").is_dir()]
+candidates.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+if sel:
+    sel_dir = brain / sel
+    if sel_dir.is_dir() and sel_dir not in candidates[:15]:
+        candidates = [sel_dir] + candidates[:14]
+    else:
+        candidates = candidates[:15]
+else:
+    candidates = candidates[:15]
+
+live_agy = live_agy_set()
+items = []
+for d in candidates:
+    sg = d / ".system_generated"
+    mem_raw = read_json(sg / "swarm/members.json") or {}
+    board = tail_jsonl(sg / "swarm/board.jsonl", 40)
+    steps = tail_jsonl(sg / "logs/transcript.jsonl", 20)
+    active_lock = d.name in live_agy
+    subs = []
+    if (sg / "subagents").is_dir():
+        for sp in sorted((sg / "subagents").glob("*.json")):
+            sd = read_json(sp) or {}
+            desc = sd.get("subagentDescriptor") or {}
+            sid = str(sd.get("conversationId") or sp.stem)
+            sub_steps = tail_jsonl(brain / sid / ".system_generated/logs/transcript.jsonl", 5) if is_safe_id(sid) else []
+            subs.append({
+                "conversation_id": sid,
+                "role": desc.get("role") or sd.get("role"),
+                "type_name": desc.get("typeName") or sd.get("typeName"),
+                "state": sd.get("state"),
+                "recent_steps": [sum_step(x) for x in sub_steps],
+            })
+    members = []
+    for name, info in (mem_raw.get("members") or {}).items():
+        if not isinstance(info, dict): continue
+        members.append({
+            "name": name,
+            "role": info.get("role"),
+            "model": info.get("applied_model") or info.get("desired_model"),
+            "phase": info.get("phase"),
+            "wake_mode": info.get("wake_mode"),
+            "last_read_seq": info.get("last_read_seq"),
+            "killed": bool(info.get("killed", False)),
+        })
+    mtime = d.stat().st_mtime
+    for c in (sg / "logs/transcript.jsonl", sg / "swarm/board.jsonl"):
+        if c.exists(): mtime = max(mtime, c.stat().st_mtime)
+    items.append({
+        "conversation_id": d.name,
+        "active": active_lock,
+        "mtime": mtime,
+        "swarm_title": mem_raw.get("title"),
+        "members": members,
+        "board": board,
+        "subagents": subs,
+        "recent_steps": [sum_step(s) for s in steps],
+    })
+
+items.sort(key=lambda x: (x["active"], x["mtime"]), reverse=True)
+top = items[:10]
+chosen = next((x for x in items if x["conversation_id"] == sel), None) or (top[0] if top else None)
+conv_list = [{"conversation_id": x["conversation_id"], "active": x["active"], "swarm_title": x["swarm_title"], "members": len(x["members"]), "subagents": len(x["subagents"])} for x in top]
+print(json.dumps({"conversations": conv_list, "selected": chosen}, ensure_ascii=False))
+`;
+
+function activeMachine() {
+  const p = props();
+  if (p?.machine !== undefined && p?.machine !== null) return p.machine;
+  return spaces().find((s) => s.active)?.machine ?? null;
+}
+
+function targetAgyTerminal(boundTerminal) {
+  if (boundTerminal) return boundTerminal;
+  const f = focused();
+  const all = panes();
+  const focusedPane = f?.pane ? all.find((p) => p.pane === f.pane) : null;
+  if (focusedPane?.terminal && focusedPane.program?.key === "antigravity") return focusedPane.terminal;
+  const activeSpace = spaces().find((s) => s.active);
+  const tabIds = new Set((activeSpace?.tabs ?? []).map((t) => t.id));
+  const match = all.find((p) => p.terminal && tabIds.has(p.tab) && p.program?.key === "antigravity");
+  return match?.terminal ?? null;
+}
+
+function badgeColor(phase, killed, t) {
+  if (killed) return t.dim;
+  const p = String(phase || "").toLowerCase();
+  if (p.includes("work") || p.includes("run")) return t.working ?? t.accent;
+  if (p.includes("block") || p.includes("err")) return t.blocked ?? t.accent;
+  return t.dim;
+}
+
+export default class AgyInspector extends View {
+  init(_props, cx) {
+    const p = props() ?? _props ?? {};
+    this.data = null;
+    this.error = null;
+    this.note = null;
+    this.selectedId = p.conversationId ?? shared("agy.selectedConv") ?? null;
+    this.initialConvId = this.selectedId;
+    this.boundTerminal = p.terminal ?? null;
+    if (shared("agy.selectedConv")) setShared("agy.selectedConv", null);
+    this.expandedSub = p.subagentId ?? null;
+    this.expandedStep = null;
+    this.tab = p.tab ?? "board";
+    this.loading = false;
+    this.sending = false;
+    this.typing = false;
+    this.message = "";
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    this.input = InputState.new({ placeholder: "Send to parent agy PTY (e.g. @worker ...)..." });
+    this.input.on("change", (_e, cx) => {
+      this.message = this.input.value();
+      cx.notify();
+    });
+    this.input.on("submit", (_e, cx) => this.sendToParent(cx));
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+
+    if (checking()) return;
+    this.refresh(cx);
+    cx.timer.every(4000, (cx) => this.refresh(cx));
+  }
+
+  refresh(cx) {
+    if (this.loading || checking()) return;
+    this.loading = true;
+    const requested = shared("agy.selectedConv");
+    if (requested) {
+      if (requested !== this.selectedId) this.selectedId = requested;
+      setShared("agy.selectedConv", null);
+    }
+    const on = activeMachine();
+    const args = ["-c", PY_INSPECT];
+    if (this.selectedId) args.push(this.selectedId);
+    cx.spawn(async (cx) => {
+      try {
+        const res = await exec("python3", args, { on, timeout: 6000 });
+        if (res.code === 0) {
+          this.data = JSON.parse(res.stdout);
+          this.error = null;
+        } else {
+          this.error = res.stderr || `exit ${res.code}`;
+        }
+      } catch (e) {
+        this.error = String(e);
+      } finally {
+        this.loading = false;
+        cx.notify();
+      }
+    });
+  }
+
+  boundTarget() {
+    if (this.boundTerminal) {
+      return this.selectedId === this.initialConvId ? this.boundTerminal : null;
+    }
+    return targetAgyTerminal(null);
+  }
+
+  sendToParent(cx) {
+    const text = this.message.trim();
+    const target = this.boundTarget();
+    if (!text || !target || this.sending || checking()) return;
+    this.sending = true;
+    this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const res = await hc(["send", target, text]);
+        if (res.code === 0) {
+          this.message = "";
+          this.input.set_value("");
+          this.note = `Sent to ${target}`;
+        } else {
+          this.note = res.stderr || `hc send exit ${res.code}`;
+        }
+      } catch (e) {
+        this.note = String(e);
+      } finally {
+        this.sending = false;
+        cx.notify();
+      }
+    });
+    cx.notify();
+  }
+
+  render(cx) {
+    const t = theme();
+    const convs = this.data?.conversations ?? [];
+    const sel = this.data?.selected;
+    const machineLabel = activeMachine() ?? "local";
+    const target = this.boundTarget();
+    const canSend = Boolean(this.message.trim() && target && !this.sending);
+
+    return v_flex()
+      .id("agy-inspector")
+      .size_full()
+      .min_h(0)
+      .rounded(10)
+      .overflow_hidden()
+      .bg(t.background)
+      .border_1()
+      .border_color(t.border)
+      .text_color(t.foreground)
+      .text_size(12.5)
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape" && this.typing) {
+          this.typing = false;
+          this.handle.focus();
+          cx.stop_propagation();
+          cx.notify();
+        }
+      })
+      .child(
+        h_flex()
+          .h(42)
+          .flex_none()
+          .px(12)
+          .gap(8)
+          .items_center()
+          .border_b(1)
+          .border_color(t.border)
+          .child(div().font_semibold().child(`Agy Inspector (${machineLabel})`))
+          .child(div().flex_1())
+          .when(Boolean(target), (e) => e.child(div().text_size(11).text_color(t.dim).child(`PTY: ${target}`)))
+          .child(
+            div()
+              .id("refresh-agy")
+              .px(8)
+              .py(3)
+              .rounded(6)
+              .bg(t.raised)
+              .text_color(t.dim)
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.refresh(cx);
+              })
+              .child(this.loading ? "…" : "Refresh")
+          )
+      )
+      .when(Boolean(this.error), (e) =>
+        e.child(div().px(12).py(6).text_size(11).text_color(t.blocked ?? t.accent).child(`Error: ${this.error}`))
+      )
+      .child(
+        h_flex()
+          .flex_none()
+          .px(10)
+          .py(6)
+          .gap(6)
+          .border_b(1)
+          .border_color(t.border)
+          .children(
+            convs.slice(0, 4).map((c) => {
+              const active = sel?.conversation_id === c.conversation_id;
+              const rawTitle = c.swarm_title || c.conversation_id.slice(0, 8);
+              const label = rawTitle.length > 20 ? rawTitle.slice(0, 18) + "…" : rawTitle;
+              const dot = c.active ? "● " : "";
+              return div()
+                .id(`conv-${c.conversation_id}`)
+                .px(8)
+                .py(4)
+                .rounded(6)
+                .cursor_pointer()
+                .bg(active ? t.accent : t.raised)
+                .text_color(active ? t.solid_foreground : t.foreground)
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  this.selectedId = c.conversation_id;
+                  this.expandedSub = null;
+                  this.expandedStep = null;
+                  this.refresh(cx);
+                })
+                .child(`${dot}${label} (${c.members}/${c.subagents})`);
+            })
+          )
+      )
+      .child(
+        h_flex()
+          .flex_none()
+          .px(10)
+          .py(5)
+          .gap(6)
+          .border_b(1)
+          .border_color(t.border)
+          .children(
+            [
+              ["board", `Board (${sel?.board?.length ?? 0})`],
+              ["subagents", `Subagents (${sel?.subagents?.length ?? 0})`],
+              ["transcript", `Transcript (${sel?.recent_steps?.length ?? 0})`],
+            ].map(([id, label]) => {
+              const active = this.tab === id;
+              return div()
+                .id(`tab-${id}`)
+                .px(8)
+                .py(3)
+                .rounded(6)
+                .cursor_pointer()
+                .bg(active ? t.selected : t.background)
+                .text_color(active ? t.foreground : t.dim)
+                .hover((s) => s.bg(t.hover))
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  this.tab = id;
+                  cx.notify();
+                })
+                .child(label);
+            })
+          )
+      )
+      .child(
+        v_flex()
+          .id("agy-scroll")
+          .flex_1()
+          .min_h(0)
+          .overflow_y_scrollbar()
+          .mode("always")
+          .p(10)
+          .gap(6)
+          .child(this.renderBody(sel, t))
+      )
+      .when(Boolean(this.note), (e) =>
+        e.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(this.note))
+      )
+      .child(
+        h_flex()
+          .flex_none()
+          .p(8)
+          .gap(8)
+          .border_t(1)
+          .border_color(t.border)
+          .child(
+            div()
+              .id("agy-steer-input")
+              .flex_1()
+              .min_w(0)
+              .h(30)
+              .px(10)
+              .flex()
+              .items_center()
+              .rounded(7)
+              .border_1()
+              .border_color(this.typing ? t.accent : t.border)
+              .cursor_text()
+              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+              .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground))
+          )
+          .child(
+            div()
+              .id("agy-steer-send")
+              .h(30)
+              .px(12)
+              .flex()
+              .items_center()
+              .rounded(7)
+              .bg(canSend ? t.solid : t.raised)
+              .text_color(canSend ? t.solid_foreground : t.dim)
+              .text_size(12)
+              .when(canSend, (e) => e.cursor_pointer())
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.sendToParent(cx);
+              })
+              .child(this.sending ? "…" : "Send")
+          )
+      );
+  }
+
+  renderBody(sel, t) {
+    if (!sel) {
+      return div().p(8).text_color(t.dim).child("No agy brain directories found on this machine.");
+    }
+    if (this.tab === "subagents") {
+      const subs = sel.subagents ?? [];
+      if (!subs.length) return div().text_color(t.dim).child("No subagents in this conversation.");
+      return v_flex()
+        .w_full()
+        .gap(6)
+        .children(
+          subs.map((s) => {
+            const open = this.expandedSub === s.conversation_id;
+            return v_flex()
+              .w_full()
+              .p(8)
+              .gap(4)
+              .rounded(6)
+              .bg(t.raised)
+              .child(
+                h_flex()
+                  .id(`sub-${s.conversation_id}`)
+                  .w_full()
+                  .gap(8)
+                  .cursor_pointer()
+                  .hover((el) => el.bg(t.hover))
+                  .on_click((_e, cx) => {
+                    cx.stop_propagation();
+                    this.expandedSub = open ? null : s.conversation_id;
+                    cx.notify();
+                  })
+                  .child(div().text_color(t.accent).child(open ? "▼" : "▶"))
+                  .child(div().font_semibold().child(s.role || s.type_name || "subagent"))
+                  .child(div().text_color(t.dim).child(`[${s.state || "?"}] ${String(s.conversation_id).slice(0, 8)}`))
+              )
+              .when(open, (e) =>
+                e.child(
+                  v_flex()
+                    .w_full()
+                    .pt(4)
+                    .gap(3)
+                    .children(
+                      (s.recent_steps ?? []).length
+                        ? s.recent_steps.map((st) =>
+                            div()
+                              .p(5)
+                              .rounded(4)
+                              .bg(t.background)
+                              .text_size(11.5)
+                              .child(`#${st.step ?? "?"} ${st.tools?.length ? `[${st.tools.join(", ")}] ` : ""}${st.preview || ""}`)
+                          )
+                        : [div().text_size(11).text_color(t.dim).child("No transcript steps yet.")]
+                    )
+                )
+              );
+          })
+        );
+    }
+    if (this.tab === "transcript") {
+      const steps = sel.recent_steps ?? [];
+      return v_flex()
+        .w_full()
+        .gap(5)
+        .children(
+          steps.slice().reverse().map((s) => {
+            const open = this.expandedStep === s.step;
+            return v_flex()
+              .id(`step-${s.step}`)
+              .w_full()
+              .p(7)
+              .gap(4)
+              .rounded(6)
+              .bg(t.raised)
+              .cursor_pointer()
+              .hover((el) => el.bg(t.hover))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.expandedStep = open ? null : s.step;
+                cx.notify();
+              })
+              .child(
+                h_flex()
+                  .w_full()
+                  .gap(6)
+                  .child(div().text_color(t.accent).child(`#${s.step ?? "?"}`))
+                  .child(div().text_color(t.dim).child(s.type || ""))
+                  .when(Boolean(s.tools?.length), (e) => e.child(div().text_color(t.working ?? t.accent).child(`[${s.tools.join(", ")}]`)))
+              )
+              .child(div().text_size(12).child(open ? (s.full || s.preview || "(empty)") : (s.preview || "(tool-only step)")));
+          })
+        );
+    }
+    const members = sel.members ?? [];
+    const board = sel.board ?? [];
+    return v_flex()
+      .w_full()
+      .gap(8)
+      .when(members.length > 0, (e) =>
+        e.child(
+          v_flex()
+            .w_full()
+            .gap(4)
+            .children(
+              members.map((m) =>
+                h_flex()
+                  .w_full()
+                  .px(8)
+                  .py(5)
+                  .gap(8)
+                  .rounded(6)
+                  .bg(t.raised)
+                  .child(div().font_semibold().text_color(badgeColor(m.phase, m.killed, t)).child(`@${m.name}`))
+                  .child(div().text_color(t.dim).child(m.killed ? "killed" : (m.wake_mode || m.phase || "?")))
+                  .child(div().text_size(11).text_color(t.dim).child(m.model || ""))
+                  .child(div().flex_1())
+                  .child(div().text_size(11).text_color(t.dim).child(`read #${m.last_read_seq ?? 0}`))
+              )
+            )
+        )
+      )
+      .child(
+        v_flex()
+          .w_full()
+          .gap(5)
+          .children(
+            board.length
+              ? board.slice().reverse().map((b) =>
+                  div()
+                    .p(8)
+                    .rounded(6)
+                    .bg(t.raised)
+                    .child(`#${b.seq ?? "?"} @${b.agent || "?"}: ${String(b.text || "")}`)
+                )
+              : [div().text_color(t.dim).child("No swarm board messages in this conversation.")]
+          )
+      );
+  }
+}
