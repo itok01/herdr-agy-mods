@@ -1,4 +1,4 @@
-# herdr-agy-mods
+# herdr-mods
 
 Third-party mods and layout for [Herdr App](https://github.com/herdrdev/herdr-app) (`herdr-app`) adding **Antigravity CLI (`agy`)** Swarm/Subagent inspection and **Codex / Claude Code** quota monitoring across both local and SSH remote machines (`hc machine`).
 
