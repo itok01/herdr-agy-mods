@@ -150,6 +150,19 @@ for d in brain.iterdir():
             is_killed = "KILL" in raw_st or "DONE" in raw_st or "COMPLET" in raw_st or "STOP" in raw_st
             if not is_killed and ("ALIVE" in raw_st or "RUN" in raw_st or "WORK" in raw_st or "ACTIVE" in raw_st or "PROGRESS" in raw_st or "GENERAT" in raw_st):
                 st = "working"
+                sub_tr = brain / sid / ".system_generated/logs/transcript.jsonl"
+                if "/" not in sid and ".." not in sid and sub_tr.is_file():
+                    try:
+                        if (now - sub_tr.stat().st_mtime) > 300:
+                            st = "idle"
+                        else:
+                            last_steps = tail_jsonl(sub_tr, 1)
+                            if last_steps:
+                                ls = last_steps[-1]
+                                if ls.get("type") == "PLANNER_RESPONSE" and ls.get("status") == "DONE" and not ls.get("tool_calls"):
+                                    st = "idle"
+                    except Exception:
+                        pass
             elif "ERR" in raw_st or "FAIL" in raw_st or "BLOCK" in raw_st:
                 st = "blocked"
             else:

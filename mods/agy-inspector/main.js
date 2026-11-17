@@ -109,12 +109,26 @@ for d in candidates:
             if not isinstance(desc, dict):
                 desc = {}
             sid = str(sd.get("conversationId") or sp.stem)
-            sub_steps = tail_jsonl(brain / sid / ".system_generated/logs/transcript.jsonl", 5) if is_safe_id(sid) else []
+            sub_tr = brain / sid / ".system_generated/logs/transcript.jsonl" if is_safe_id(sid) else None
+            sub_steps = tail_jsonl(sub_tr, 5) if sub_tr else []
+            raw_sub_st = str(sd.get("state") or "").upper()
+            eff_state = sd.get("state")
+            if "ALIVE" in raw_sub_st and sub_tr and sub_tr.is_file():
+                try:
+                    import time as _time
+                    if (_time.time() - sub_tr.stat().st_mtime) > 300:
+                        eff_state = "waiting"
+                    elif sub_steps:
+                        ls = sub_steps[-1]
+                        if ls.get("type") == "PLANNER_RESPONSE" and ls.get("status") == "DONE" and not ls.get("tool_calls"):
+                            eff_state = "waiting"
+                except Exception:
+                    pass
             subs.append({
                 "conversation_id": sid,
                 "role": desc.get("role") or sd.get("role"),
                 "type_name": desc.get("typeName") or sd.get("typeName"),
-                "state": sd.get("state"),
+                "state": eff_state,
                 "recent_steps": [sum_step(x) for x in sub_steps],
             })
     members = []
