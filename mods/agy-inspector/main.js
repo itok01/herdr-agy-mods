@@ -64,7 +64,10 @@ def tail_jsonl(p, limit=30):
 def sum_step(s):
     tools = [str(tc.get("name")) for tc in (s.get("tool_calls") or []) if isinstance(tc, dict) and tc.get("name")]
     full = str(s.get("content") or "").strip()
-    prev = full.replace("\\n", " ")
+    clean = re.sub(r"<ADDITIONAL_METADATA>[\s\S]*?</ADDITIONAL_METADATA>", "", full)
+    clean = re.sub(r"</?USER_REQUEST>", "", clean)
+    clean = re.sub(r"(?:Created|Completed) At:\s*\S+(?:\s*Command exited with code \d+\.?)?", "", clean)
+    prev = " ".join(clean.split())
     if len(prev) > 140: prev = prev[:137] + "..."
     return {"step": s.get("step_index"), "type": s.get("type"), "status": s.get("status"), "tools": tools, "preview": prev, "full": full[:1500]}
 
@@ -163,7 +166,7 @@ function targetAgyTerminal(boundTerminal) {
 }
 
 function shortErr(err) {
-  const lines = String(err || "").trim().splitlines ? String(err).trim().split(/\r?\n/) : String(err || "").trim().split(/\r?\n/);
+  const lines = String(err || "").trim().split(/\r?\n/);
   return (lines.filter(Boolean).pop() || "Unknown error").slice(0, 140);
 }
 
@@ -225,7 +228,11 @@ export default class AgyInspector extends View {
     this.reqSeq = 0;
     if (shared("agy.selectedConv")) setShared("agy.selectedConv", null);
     this.expandedSub = p.subagentId ?? null;
+    this.focusedSub = p.subagentId ?? null;
+    this.initialSubId = p.subagentId ?? null;
     this.expandedStep = null;
+    this.expandedBoardSeqs = new Set();
+    this.filterMemberOnly = false;
     this.showKilled = false;
     this.userPickedTab = Boolean(p.tab);
     this.tab = p.tab ?? "board";
@@ -507,11 +514,21 @@ export default class AgyInspector extends View {
           .border_b(1)
           .border_color(t.border)
           .children(
-            [
-              ["board", "board", `Board (${sel?.board?.length ?? 0})`],
-              ["subagents", "subagent", `Subagents (${sel?.subagents?.length ?? 0})`],
-              ["transcript", "transcript", `Transcript (${sel?.recent_steps?.length ?? 0})`],
-            ].map(([id, iconName, label]) => {
+            (() => {
+              const allSubs = sel?.subagents ?? [];
+              const aliveSubs = allSubs.filter((s) => {
+                const st = String(s.state || "").toLowerCase();
+                return !(st.includes("kill") || st.includes("done") || st.includes("stop"));
+              }).length;
+              const subLabel = aliveSubs > 0 && aliveSubs < allSubs.length
+                ? `Subagents (${aliveSubs}/${allSubs.length})`
+                : `Subagents (${allSubs.length})`;
+              return [
+                ["board", "board", `Board (${sel?.board?.length ?? 0})`],
+                ["subagents", "subagent", subLabel],
+                ["transcript", "transcript", `Transcript (${sel?.recent_steps?.length ?? 0})`],
+              ];
+            })().map(([id, iconName, label]) => {
               const active = this.tab === id;
               return h_flex()
                 .id(`tab-${id}`)
@@ -621,6 +638,9 @@ export default class AgyInspector extends View {
         return st.includes("kill") || st.includes("done") || st.includes("stop");
       };
       const subs = (sel.subagents ?? []).slice().sort((a, b) => {
+        const ai = this.initialSubId && a.conversation_id === this.initialSubId ? 1 : 0;
+        const bi = this.initialSubId && b.conversation_id === this.initialSubId ? 1 : 0;
+        if (ai !== bi) return bi - ai;
         const ak = isSubKilled(a) ? 1 : 0;
         const bk = isSubKilled(b) ? 1 : 0;
         return ak - bk;
@@ -635,27 +655,31 @@ export default class AgyInspector extends View {
         .children(
           visibleSubs.map((s) => {
             const open = this.expandedSub === s.conversation_id;
+            const isFocusedSub = this.focusedSub === s.conversation_id;
             return v_flex()
+              .id(`sub-${s.conversation_id}`)
               .w_full()
               .p(9)
               .gap(6)
               .rounded(8)
-              .bg(t.surface ?? t.raised)
+              .bg(isFocusedSub ? t.selected : (t.surface ?? t.raised))
               .border_1()
-              .border_color(t.border)
+              .border_color(isFocusedSub ? t.accent : t.border)
+              .when(isFocusedSub, (el) => el.border_l(3).border_color(t.accent))
+              .cursor_pointer()
+              .hover((el) => el.bg(t.hover))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.initialSubId = null;
+                this.focusedSub = s.conversation_id;
+                this.expandedSub = open ? null : s.conversation_id;
+                cx.notify();
+              })
               .child(
                 h_flex()
-                  .id(`sub-${s.conversation_id}`)
                   .w_full()
                   .gap(8)
                   .items_center()
-                  .cursor_pointer()
-                  .hover((el) => el.bg(t.hover))
-                  .on_click((_e, cx) => {
-                    cx.stop_propagation();
-                    this.expandedSub = open ? null : s.conversation_id;
-                    cx.notify();
-                  })
                   .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
                   .child(image("icons/antigravity.svg").w(13).h(13).flex_none())
                   .child(div().font_semibold().child(s.role || s.type_name || "subagent"))
@@ -671,7 +695,7 @@ export default class AgyInspector extends View {
                     .gap(4)
                     .children(
                       (s.recent_steps ?? []).length
-                        ? s.recent_steps.map((st) =>
+                        ? s.recent_steps.slice().reverse().map((st) =>
                             v_flex()
                               .p(7)
                               .gap(3)
@@ -688,7 +712,9 @@ export default class AgyInspector extends View {
                                     el.child(div().text_size(11).text_color(t.working ?? t.accent).child(st.tools.join(", ")))
                                   )
                               )
-                              .child(div().text_size(11.5).text_color(t.foreground).child(st.preview || "(tool-only step)"))
+                              .when(Boolean(st.preview) || !st.tools?.length, (el) =>
+                                el.child(div().text_size(11.5).text_color(t.foreground).child(st.preview || "(empty step)"))
+                              )
                           )
                         : [div().text_size(11).text_color(t.dim).child("No transcript steps yet.")]
                     )
@@ -797,9 +823,10 @@ export default class AgyInspector extends View {
                   .gap(8)
                   .items_center()
                   .rounded(8)
-                  .bg(t.surface ?? t.raised)
+                  .bg(isFocusedMember ? t.selected : (t.surface ?? t.raised))
                   .border_1()
                   .border_color(isFocusedMember ? t.accent : t.border)
+                  .when(isFocusedMember, (el) => el.border_l(3).border_color(t.accent))
                   .cursor_pointer()
                   .tooltip(`Click to mention @${m.name} in message`)
                   .hover((el) => el.bg(t.hover))
@@ -853,32 +880,88 @@ export default class AgyInspector extends View {
             )
         )
       )
+      .when(Boolean(this.focusedMember) && board.length > 0, (e) =>
+        e.child(
+          h_flex()
+            .w_full()
+            .gap(6)
+            .items_center()
+            .child(
+              div()
+                .id("filter-focused-member")
+                .px(8)
+                .py(3)
+                .rounded(6)
+                .border_1()
+                .border_color(this.filterMemberOnly ? t.accent : t.border)
+                .bg(this.filterMemberOnly ? t.selected : t.raised)
+                .text_size(11)
+                .text_color(this.filterMemberOnly ? t.foreground : t.muted)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  this.filterMemberOnly = !this.filterMemberOnly;
+                  cx.notify();
+                })
+                .child(this.filterMemberOnly ? `Showing @${this.focusedMember} only (click for all)` : `Filter: @${this.focusedMember} only`)
+            )
+        )
+      )
       .child(
         v_flex()
           .w_full()
           .gap(5)
-          .children(
-            board.length
-              ? board.slice().reverse().map((b) =>
-                  v_flex()
-                    .p(9)
-                    .gap(4)
-                    .rounded(8)
-                    .bg(t.surface ?? t.raised)
-                    .border_1()
-                    .border_color(this.focusedMember && b.agent === this.focusedMember ? t.accent : t.border)
-                    .child(
-                      h_flex()
-                        .w_full()
-                        .items_center()
-                        .child(div().font_semibold().text_color(t.accent).child(`@${b.agent || "?"}`))
-                        .child(div().flex_1())
-                        .child(div().text_size(10.5).text_color(t.dim).child(`#${b.seq ?? "?"}`))
-                    )
-                    .child(div().text_size(12).text_color(t.foreground).child(String(b.text || "")))
+          .children((() => {
+            const visibleBoard = (this.filterMemberOnly && this.focusedMember)
+              ? board.filter((b) => b.agent === this.focusedMember)
+              : board;
+            if (!visibleBoard.length) {
+              return [div().text_color(t.dim).child(this.filterMemberOnly ? `No board messages from @${this.focusedMember}.` : "No swarm board messages in this conversation.")];
+            }
+            return visibleBoard.slice().reverse().map((b, idx) => {
+              const seqKey = String(b.seq ?? idx);
+              const isPostFocused = Boolean(this.focusedMember && b.agent === this.focusedMember);
+              const fullText = String(b.text || "");
+              const isLong = fullText.length > 360;
+              const isExpanded = this.expandedBoardSeqs.has(seqKey);
+              const displayText = isLong && !isExpanded ? fullText.slice(0, 357) + "..." : fullText;
+              const authorColor = isPostFocused ? t.accent : (this.focusedMember ? t.muted : t.accent);
+              return v_flex()
+                .id(`board-post-${seqKey}`)
+                .p(9)
+                .gap(4)
+                .rounded(8)
+                .bg(isPostFocused ? t.selected : (t.surface ?? t.raised))
+                .border_1()
+                .border_color(isPostFocused ? t.accent : t.border)
+                .when(isPostFocused, (el) => el.border_l(3).border_color(t.accent))
+                .child(
+                  h_flex()
+                    .w_full()
+                    .items_center()
+                    .child(div().font_semibold().text_color(authorColor).child(`@${b.agent || "?"}`))
+                    .child(div().flex_1())
+                    .child(div().text_size(10.5).text_color(t.dim).child(`#${b.seq ?? "?"}`))
                 )
-              : [div().text_color(t.dim).child("No swarm board messages in this conversation.")]
-          )
+                .child(div().text_size(12).text_color(t.foreground).child(displayText))
+                .when(isLong, (el) =>
+                  el.child(
+                    div()
+                      .id(`board-more-${seqKey}`)
+                      .text_size(11)
+                      .text_color(t.accent)
+                      .cursor_pointer()
+                      .on_click((_e, cx) => {
+                        cx.stop_propagation();
+                        isExpanded ? this.expandedBoardSeqs.delete(seqKey) : this.expandedBoardSeqs.add(seqKey);
+                        cx.notify();
+                      })
+                      .child(isExpanded ? "Show less" : "Show more")
+                  )
+                );
+            });
+          })())
       );
   }
 }

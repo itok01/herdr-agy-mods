@@ -263,7 +263,7 @@ function barRow(label, usedPct, resetIn, t, stale = false) {
   const used = Math.min(100, Math.max(0, Number(usedPct || 0)));
   const remNum = Math.max(0, 100 - used);
   const rem = remNum.toFixed(1);
-  const fillColor = stale ? t.dim : remNum <= 15 ? (t.blocked ?? t.accent) : remNum <= 30 ? (t.accent ?? t.working) : (t.working ?? t.accent);
+  const fillColor = stale ? t.dim : remNum <= 15 ? (t.blocked ?? t.accent) : remNum <= 30 ? (t.working ?? t.accent) : (t.ansi2 ?? t.done ?? t.working ?? t.accent);
 
   return v_flex()
     .w_full()
