@@ -270,10 +270,11 @@ export default class WorkspaceStatusAgy extends View {
     const claudeMin = quotaEntries.length ? Math.min(...quotaEntries.map(([, rem]) => Number(rem))) : null;
     const claudeLow = claudeMin != null && claudeMin <= 15;
     const claudeWarn = claudeMin != null && claudeMin <= 30;
+    const fmtEntry = ([k, v], unit, onlyOne) => (onlyOne && k === "default" ? `${v}${unit}` : `${k} ${v}${unit}`);
     const claudeText = quotaEntries.length
-      ? quotaEntries.map(([k, v]) => `${k} ${v}%`).join(" · ")
+      ? quotaEntries.map((e) => fmtEntry(e, "%", quotaEntries.length === 1)).join(" · ")
       : profEntries.length
-      ? profEntries.map(([k, v]) => `${k} ${v} sess`).join(" · ")
+      ? profEntries.map((e) => fmtEntry(e, " sess", profEntries.length === 1)).join(" · ")
       : null;
     const healthColor = (pct, stale) => (stale ? t.dim : pct <= 15 ? t.blocked : pct <= 30 ? t.accent : t.working);
 
