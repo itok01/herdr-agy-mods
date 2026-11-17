@@ -1,6 +1,6 @@
-import { View, div } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, hc, theme, checking, shared, setShared, props } from "herdr";
+import { spaces, panes, focused, exec, hc, theme, checking, shared, setShared, props, closeOverlay, run } from "herdr";
 
 const PY_INSPECT = `
 import json, os, re, subprocess, sys
@@ -169,6 +169,42 @@ function badgeColor(phase, killed, t) {
   return t.dim;
 }
 
+function statusPill(phase, killed, t) {
+  if (killed) {
+    return h_flex()
+      .gap(5)
+      .items_center()
+      .child(div().size(6).rounded(3).bg(t.dim))
+      .child(div().text_size(11).text_color(t.dim).child("killed"));
+  }
+  const p = String(phase || "").toLowerCase();
+  if (p.includes("work") || p.includes("run")) {
+    return h_flex()
+      .gap(5)
+      .items_center()
+      .child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900))
+      .child(div().text_size(11).text_color(t.working).child("working"));
+  }
+  if (p.includes("block") || p.includes("err")) {
+    return div()
+      .px(6)
+      .h(18)
+      .rounded(5)
+      .bg(t.blocked + "26")
+      .text_size(10.5)
+      .font_semibold()
+      .text_color(t.blocked)
+      .flex()
+      .items_center()
+      .child("Needs you");
+  }
+  return h_flex()
+    .gap(5)
+    .items_center()
+    .child(div().size(7).rounded(4).border(1.5).border_color(t.idle ?? t.dim))
+    .child(div().text_size(11).text_color(t.dim).child(phase || "waiting"));
+}
+
 export default class AgyInspector extends View {
   init(_props, cx) {
     const p = props() ?? _props ?? {};
@@ -278,7 +314,7 @@ export default class AgyInspector extends View {
       .min_h(0)
       .rounded(10)
       .overflow_hidden()
-      .bg(t.background)
+      .bg(t.popover ?? t.background)
       .border_1()
       .border_color(t.border)
       .text_color(t.foreground)
@@ -294,31 +330,91 @@ export default class AgyInspector extends View {
       })
       .child(
         h_flex()
-          .h(42)
+          .h(44)
           .flex_none()
-          .px(12)
+          .px(14)
           .gap(8)
           .items_center()
           .border_b(1)
           .border_color(t.border)
-          .child(div().font_semibold().child(`Agy Inspector (${machineLabel})`))
-          .child(div().flex_1())
-          .when(Boolean(target), (e) => e.child(div().text_size(11).text_color(t.dim).child(`PTY: ${target}`)))
+          .child(image("icons/antigravity.svg").w(16).h(16).flex_none())
+          .child(div().font_semibold().child("Agy Inspector"))
           .child(
             div()
-              .id("refresh-agy")
-              .px(8)
-              .py(3)
-              .rounded(6)
+              .px(6)
+              .py(1)
+              .rounded(4)
               .bg(t.raised)
+              .border_1()
+              .border_color(t.border)
+              .text_size(11)
+              .text_color(t.dim)
+              .child(machineLabel)
+          )
+          .child(div().flex_1())
+          .when(Boolean(target), (e) =>
+            e.child(
+              div()
+                .id("focus-agy-pty")
+                .px(8)
+                .py(4)
+                .rounded(7)
+                .border_1()
+                .border_color(t.border)
+                .bg(t.raised)
+                .text_size(11.5)
+                .text_color(t.foreground)
+                .cursor_pointer()
+                .tooltip(`Focus bound agy pane (${target})`)
+                .hover((s) => s.bg(t.hover))
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  run("pane.focus", { terminal: target });
+                  closeOverlay();
+                })
+                .child("Focus PTY")
+            )
+          )
+          .child(
+            h_flex()
+              .id("refresh-agy")
+              .gap(5)
+              .items_center()
+              .px(8)
+              .py(4)
+              .rounded(7)
+              .border_1()
+              .border_color(t.border)
+              .bg(t.raised)
+              .text_size(11.5)
               .text_color(t.dim)
               .cursor_pointer()
-              .hover((s) => s.bg(t.hover))
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
               .on_click((_e, cx) => {
                 cx.stop_propagation();
                 this.refresh(cx);
               })
-              .child(this.loading ? "…" : "Refresh")
+              .child(
+                this.loading
+                  ? svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)
+                  : svg("mods/agy-inspector/refresh.svg").size(12).flex_none()
+              )
+              .child("Refresh")
+          )
+          .child(
+            div()
+              .id("close-agy")
+              .p(4)
+              .rounded(6)
+              .text_color(t.dim)
+              .cursor_pointer()
+              .tooltip("Close (Esc)")
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                closeOverlay();
+              })
+              .child(svg("mods/workspace-chrome/x.svg").size(13).flex_none())
           )
       )
       .when(Boolean(this.error), (e) =>
@@ -337,9 +433,10 @@ export default class AgyInspector extends View {
               const active = sel?.conversation_id === c.conversation_id;
               const rawTitle = c.swarm_title || c.conversation_id.slice(0, 8);
               const label = rawTitle.length > 20 ? rawTitle.slice(0, 18) + "…" : rawTitle;
-              const dot = c.active ? "● " : "";
-              return div()
+              return h_flex()
                 .id(`conv-${c.conversation_id}`)
+                .gap(6)
+                .items_center()
                 .px(8)
                 .py(4)
                 .rounded(6)
@@ -353,7 +450,10 @@ export default class AgyInspector extends View {
                   this.expandedStep = null;
                   this.refresh(cx);
                 })
-                .child(`${dot}${label} (${c.members}/${c.subagents})`);
+                .when(Boolean(c.active), (e) =>
+                  e.child(div().size(6).rounded(3).flex_none().bg(active ? t.solid_foreground : (t.working ?? t.accent)))
+                )
+                .child(`${label} (${c.members}/${c.subagents})`);
             })
           )
       )
@@ -367,13 +467,15 @@ export default class AgyInspector extends View {
           .border_color(t.border)
           .children(
             [
-              ["board", `Board (${sel?.board?.length ?? 0})`],
-              ["subagents", `Subagents (${sel?.subagents?.length ?? 0})`],
-              ["transcript", `Transcript (${sel?.recent_steps?.length ?? 0})`],
-            ].map(([id, label]) => {
+              ["board", "board", `Board (${sel?.board?.length ?? 0})`],
+              ["subagents", "subagent", `Subagents (${sel?.subagents?.length ?? 0})`],
+              ["transcript", "transcript", `Transcript (${sel?.recent_steps?.length ?? 0})`],
+            ].map(([id, iconName, label]) => {
               const active = this.tab === id;
-              return div()
+              return h_flex()
                 .id(`tab-${id}`)
+                .gap(5)
+                .items_center()
                 .px(8)
                 .py(3)
                 .rounded(6)
@@ -386,6 +488,7 @@ export default class AgyInspector extends View {
                   this.tab = id;
                   cx.notify();
                 })
+                .child(svg(`mods/agy-inspector/${iconName}.svg`).size(12).flex_none())
                 .child(label);
             })
           )
@@ -428,11 +531,11 @@ export default class AgyInspector extends View {
               .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground))
           )
           .child(
-            div()
+            h_flex()
               .id("agy-steer-send")
               .h(30)
+              .gap(5)
               .px(12)
-              .flex()
               .items_center()
               .rounded(7)
               .bg(canSend ? t.solid : t.raised)
@@ -443,7 +546,12 @@ export default class AgyInspector extends View {
                 cx.stop_propagation();
                 this.sendToParent(cx);
               })
-              .child(this.sending ? "…" : "Send")
+              .child(
+                this.sending
+                  ? svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().spin(900)
+                  : svg("mods/agy-inspector/send.svg").size(12).flex_none()
+              )
+              .child("Send")
           )
       );
   }
@@ -463,15 +571,18 @@ export default class AgyInspector extends View {
             const open = this.expandedSub === s.conversation_id;
             return v_flex()
               .w_full()
-              .p(8)
-              .gap(4)
-              .rounded(6)
-              .bg(t.raised)
+              .p(9)
+              .gap(6)
+              .rounded(8)
+              .bg(t.surface ?? t.raised)
+              .border_1()
+              .border_color(t.border)
               .child(
                 h_flex()
                   .id(`sub-${s.conversation_id}`)
                   .w_full()
                   .gap(8)
+                  .items_center()
                   .cursor_pointer()
                   .hover((el) => el.bg(t.hover))
                   .on_click((_e, cx) => {
@@ -479,25 +590,39 @@ export default class AgyInspector extends View {
                     this.expandedSub = open ? null : s.conversation_id;
                     cx.notify();
                   })
-                  .child(div().text_color(t.accent).child(open ? "▼" : "▶"))
+                  .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
+                  .child(svg("mods/agy-inspector/subagent.svg").size(12).flex_none().text_color(t.accent))
                   .child(div().font_semibold().child(s.role || s.type_name || "subagent"))
-                  .child(div().text_color(t.dim).child(`[${s.state || "?"}] ${String(s.conversation_id).slice(0, 8)}`))
+                  .child(div().text_size(11).text_color(t.dim).child(String(s.conversation_id).slice(0, 8)))
+                  .child(div().flex_1())
+                  .child(statusPill(s.state, false, t))
               )
               .when(open, (e) =>
                 e.child(
                   v_flex()
                     .w_full()
                     .pt(4)
-                    .gap(3)
+                    .gap(4)
                     .children(
                       (s.recent_steps ?? []).length
                         ? s.recent_steps.map((st) =>
-                            div()
-                              .p(5)
-                              .rounded(4)
+                            v_flex()
+                              .p(7)
+                              .gap(3)
+                              .rounded(6)
                               .bg(t.background)
-                              .text_size(11.5)
-                              .child(`#${st.step ?? "?"} ${st.tools?.length ? `[${st.tools.join(", ")}] ` : ""}${st.preview || ""}`)
+                              .border_1()
+                              .border_color(t.border)
+                              .child(
+                                h_flex()
+                                  .gap(6)
+                                  .items_center()
+                                  .child(div().text_size(11).font_semibold().text_color(t.accent).child(`#${st.step ?? "?"}`))
+                                  .when(Boolean(st.tools?.length), (el) =>
+                                    el.child(div().text_size(11).text_color(t.working ?? t.accent).child(st.tools.join(", ")))
+                                  )
+                              )
+                              .child(div().text_size(11.5).text_color(t.foreground).child(st.preview || "(tool-only step)"))
                           )
                         : [div().text_size(11).text_color(t.dim).child("No transcript steps yet.")]
                     )
@@ -517,10 +642,12 @@ export default class AgyInspector extends View {
             return v_flex()
               .id(`step-${s.step}`)
               .w_full()
-              .p(7)
+              .p(9)
               .gap(4)
-              .rounded(6)
-              .bg(t.raised)
+              .rounded(8)
+              .bg(t.surface ?? t.raised)
+              .border_1()
+              .border_color(t.border)
               .cursor_pointer()
               .hover((el) => el.bg(t.hover))
               .on_click((_e, cx) => {
@@ -532,9 +659,23 @@ export default class AgyInspector extends View {
                 h_flex()
                   .w_full()
                   .gap(6)
-                  .child(div().text_color(t.accent).child(`#${s.step ?? "?"}`))
-                  .child(div().text_color(t.dim).child(s.type || ""))
-                  .when(Boolean(s.tools?.length), (e) => e.child(div().text_color(t.working ?? t.accent).child(`[${s.tools.join(", ")}]`)))
+                  .items_center()
+                  .child(div().font_semibold().text_color(t.accent).child(`#${s.step ?? "?"}`))
+                  .when(Boolean(s.type), (e) =>
+                    e.child(
+                      div()
+                        .px(5)
+                        .py(1)
+                        .rounded(4)
+                        .bg(t.background)
+                        .border_1()
+                        .border_color(t.border)
+                        .text_size(10.5)
+                        .text_color(t.dim)
+                        .child(s.type)
+                    )
+                  )
+                  .when(Boolean(s.tools?.length), (e) => e.child(div().text_size(11).text_color(t.working ?? t.accent).child(s.tools.join(", "))))
               )
               .child(div().text_size(12).child(open ? (s.full || s.preview || "(empty)") : (s.preview || "(tool-only step)")));
           })
@@ -553,17 +694,46 @@ export default class AgyInspector extends View {
             .children(
               members.map((m) =>
                 h_flex()
+                  .id(`roster-${m.name}`)
                   .w_full()
-                  .px(8)
-                  .py(5)
+                  .px(10)
+                  .py(6)
                   .gap(8)
-                  .rounded(6)
-                  .bg(t.raised)
+                  .items_center()
+                  .rounded(8)
+                  .bg(t.surface ?? t.raised)
+                  .border_1()
+                  .border_color(t.border)
+                  .cursor_pointer()
+                  .tooltip(`Click to mention @${m.name} in message`)
+                  .hover((el) => el.bg(t.hover))
+                  .on_click((_e, cx) => {
+                    cx.stop_propagation();
+                    const prefix = `@${m.name} `;
+                    if (!this.message.startsWith(prefix)) {
+                      this.message = `${prefix}${this.message}`;
+                      this.input.set_value(this.message);
+                      cx.notify();
+                    }
+                  })
                   .child(div().font_semibold().text_color(badgeColor(m.phase, m.killed, t)).child(`@${m.name}`))
-                  .child(div().text_color(t.dim).child(m.killed ? "killed" : (m.wake_mode || m.phase || "?")))
-                  .child(div().text_size(11).text_color(t.dim).child(m.model || ""))
+                  .when(Boolean(m.model), (el) =>
+                    el.child(
+                      div()
+                        .px(5)
+                        .py(1)
+                        .rounded(4)
+                        .bg(t.background)
+                        .border_1()
+                        .border_color(t.border)
+                        .text_size(10.5)
+                        .text_color(t.dim)
+                        .child(m.model)
+                    )
+                  )
                   .child(div().flex_1())
                   .child(div().text_size(11).text_color(t.dim).child(`read #${m.last_read_seq ?? 0}`))
+                  .child(statusPill(m.wake_mode || m.phase, m.killed, t))
               )
             )
         )
@@ -575,11 +745,22 @@ export default class AgyInspector extends View {
           .children(
             board.length
               ? board.slice().reverse().map((b) =>
-                  div()
-                    .p(8)
-                    .rounded(6)
-                    .bg(t.raised)
-                    .child(`#${b.seq ?? "?"} @${b.agent || "?"}: ${String(b.text || "")}`)
+                  v_flex()
+                    .p(9)
+                    .gap(4)
+                    .rounded(8)
+                    .bg(t.surface ?? t.raised)
+                    .border_1()
+                    .border_color(t.border)
+                    .child(
+                      h_flex()
+                        .w_full()
+                        .items_center()
+                        .child(div().font_semibold().text_color(t.accent).child(`@${b.agent || "?"}`))
+                        .child(div().flex_1())
+                        .child(div().text_size(10.5).text_color(t.dim).child(`#${b.seq ?? "?"}`))
+                    )
+                    .child(div().text_size(12).text_color(t.foreground).child(String(b.text || "")))
                 )
               : [div().text_color(t.dim).child("No swarm board messages in this conversation.")]
           )

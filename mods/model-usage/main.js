@@ -1,6 +1,6 @@
-import { View, div } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, exec, theme, checking } from "herdr";
+import { spaces, exec, theme, checking, closeOverlay } from "herdr";
 
 const PY_USAGE = `
 import hashlib, json, os, re, subprocess, sys, time, urllib.request
@@ -308,36 +308,75 @@ export default class ModelUsage extends View {
       .min_h(0)
       .rounded(10)
       .overflow_hidden()
-      .bg(t.background)
+      .bg(t.popover ?? t.background)
       .border_1()
       .border_color(t.border)
       .text_color(t.foreground)
       .text_size(12.5)
       .child(
         h_flex()
-          .h(42)
+          .h(44)
           .flex_none()
-          .px(12)
+          .px(14)
           .gap(8)
           .items_center()
           .border_b(1)
           .border_color(t.border)
-          .child(div().font_semibold().child(`Model Usage & Quota (${machineLabel})`))
-          .child(div().flex_1())
+          .child(svg("mods/model-usage/gauge.svg").size(15).flex_none().text_color(t.accent))
+          .child(div().font_semibold().child("Model Usage & Quota"))
           .child(
             div()
-              .id("refresh-usage")
-              .px(8)
-              .py(3)
-              .rounded(6)
+              .px(6)
+              .py(1)
+              .rounded(4)
               .bg(t.raised)
+              .border_1()
+              .border_color(t.border)
+              .text_size(11)
+              .text_color(t.dim)
+              .child(machineLabel)
+          )
+          .child(div().flex_1())
+          .child(
+            h_flex()
+              .id("refresh-usage")
+              .gap(5)
+              .items_center()
+              .px(8)
+              .py(4)
+              .rounded(7)
+              .border_1()
+              .border_color(t.border)
+              .bg(t.raised)
+              .text_size(11.5)
               .text_color(t.dim)
               .cursor_pointer()
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
               .on_click((_e, cx) => {
                 cx.stop_propagation();
                 this.refresh(cx);
               })
-              .child(isLoading ? "…" : "Refresh")
+              .child(
+                isLoading
+                  ? svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)
+                  : svg("mods/model-usage/refresh.svg").size(12).flex_none()
+              )
+              .child("Refresh")
+          )
+          .child(
+            div()
+              .id("close-usage")
+              .p(4)
+              .rounded(6)
+              .text_color(t.dim)
+              .cursor_pointer()
+              .tooltip("Close (Esc)")
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                closeOverlay();
+              })
+              .child(svg("mods/workspace-chrome/x.svg").size(13).flex_none())
           )
       )
       .when(Boolean(err), (e) =>
@@ -361,14 +400,18 @@ export default class ModelUsage extends View {
                 e.child(
                   v_flex()
                     .w_full()
-                    .p(9)
-                    .gap(6)
-                    .rounded(6)
-                    .bg(t.raised)
+                    .p(11)
+                    .gap(7)
+                    .rounded(8)
+                    .bg(t.surface ?? t.raised)
+                    .border_1()
+                    .border_color(t.border)
                     .child(
                       h_flex()
                         .w_full()
-                        .gap(8)
+                        .gap(7)
+                        .items_center()
+                        .child(image("icons/codex.svg").w(15).h(15).flex_none())
                         .child(div().font_semibold().child(`Codex CLI ${codex.plan_type ? `(${codex.plan_type})` : ""}`))
                         .child(div().flex_1())
                         .when(Boolean(codex.tokens), (el) =>
@@ -387,11 +430,20 @@ export default class ModelUsage extends View {
                 return e.child(
                   v_flex()
                     .w_full()
-                    .p(9)
-                    .gap(4)
-                    .rounded(6)
-                    .bg(t.raised)
-                    .child(div().font_semibold().child("Claude Code"))
+                    .p(11)
+                    .gap(6)
+                    .rounded(8)
+                    .bg(t.surface ?? t.raised)
+                    .border_1()
+                    .border_color(t.border)
+                    .child(
+                      h_flex()
+                        .w_full()
+                        .gap(7)
+                        .items_center()
+                        .child(image("icons/claude.svg").w(15).h(15).flex_none())
+                        .child(div().font_semibold().child("Claude Code"))
+                    )
                     .child(div().text_size(11.5).text_color(t.dim).child(claude.installed ? `24h active session files: ${claude.recent_24h_sessions}` : "Not installed"))
                     .children(
                       profEntries.map(([name, info]) => {

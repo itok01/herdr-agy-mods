@@ -1,4 +1,4 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, agents, theme, run, window, keys, exec, checking } from "herdr";
 
@@ -220,14 +220,14 @@ export default class WorkspaceStatusAgy extends View {
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
 
     const u = this.usageByMachine[curMachine ?? ""];
-    const codexText = u?.codex_rem != null ? `Codex ${u.codex_win || ""} ${u.codex_rem}%` : null;
+    const codexText = u?.codex_rem != null ? `${u.codex_win || "5h"} ${u.codex_rem}%` : null;
     const quotaEntries = Object.entries(u?.claude_quotas ?? {});
     const profEntries = Object.entries(u?.claude_counts ?? {});
     const claudeLow = quotaEntries.some(([, rem]) => Number(rem) <= 15);
     const claudeText = quotaEntries.length
-      ? `Claude [${quotaEntries.map(([k, v]) => `${k}:${v}%`).join(" ")}]`
+      ? quotaEntries.map(([k, v]) => `${k} ${v}%`).join(" · ")
       : profEntries.length
-      ? `Claude [${profEntries.map(([k, v]) => `${k}:${v}`).join(" ")}]`
+      ? profEntries.map(([k, v]) => `${k} ${v}`).join(" · ")
       : null;
 
     return h_flex()
@@ -253,35 +253,43 @@ export default class WorkspaceStatusAgy extends View {
       .child(div().flex_1())
       .when(Boolean(codexText), (el) =>
         el.child(
-          div()
+          h_flex()
             .id("status-codex-quota")
-            .px(5)
+            .gap(5)
+            .items_center()
+            .px(6)
             .py(1)
             .rounded(4)
             .text_color(u.codex_rem <= 15 ? t.blocked : t.muted)
             .cursor_pointer()
+            .tooltip("Codex quota — click for details")
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => {
               cx.stop_propagation();
               run("mod.open", { name: "model-usage" });
             })
+            .child(image("icons/codex.svg").w(12).h(12).flex_none())
             .child(codexText)
         )
       )
       .when(Boolean(claudeText), (el) =>
         el.child(
-          div()
+          h_flex()
             .id("status-claude-quota")
-            .px(5)
+            .gap(5)
+            .items_center()
+            .px(6)
             .py(1)
             .rounded(4)
             .text_color(claudeLow ? t.blocked : t.muted)
             .cursor_pointer()
+            .tooltip("Claude Code quota — click for details")
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => {
               cx.stop_propagation();
               run("mod.open", { name: "model-usage" });
             })
+            .child(image("icons/claude.svg").w(12).h(12).flex_none())
             .child(claudeText)
         )
       )
