@@ -7,13 +7,13 @@ import hashlib, json, os, re, subprocess, sys, time, urllib.request
 from datetime import datetime
 from pathlib import Path
 
-root = Path.home()
+root = Path(os.environ.get("HERDR_USAGE_HOME") or Path.home())
 now = time.time()
-active_folder = sys.argv[1] if len(sys.argv) > 1 else ""
 
 # 1. Codex rate_limits (walk YYYY/MM/DD descending to avoid scanning thousands of files)
 codex_rem = None
 codex_win = None
+codex_stale = False
 sessions_dir = root / ".codex/sessions"
 if sessions_dir.is_dir():
     latest_files = []
@@ -34,12 +34,25 @@ if sessions_dir.is_dir():
         for raw in reversed(lines):
             if "rate_limits" not in raw: continue
             try:
-                rl = (json.loads(raw).get("payload") or {}).get("rate_limits") or {}
-                w = rl.get("primary") or rl.get("secondary")
-                if isinstance(w, dict) and "used_percent" in w:
-                    codex_rem = round(max(0.0, 100.0 - float(w["used_percent"])))
+                rl = (json.loads(raw).get("payload") or {}).get("rate_limits")
+                if not isinstance(rl, dict): continue
+                best = None
+                for key in ("primary", "secondary"):
+                    w = rl.get(key)
+                    if isinstance(w, dict) and w.get("used_percent") is not None:
+                        u = float(w["used_percent"])
+                        if best is None or u > best[0]:
+                            best = (u, w)
+                if best is not None:
+                    u, w = best
+                    codex_rem = round(max(0.0, 100.0 - u))
                     m = int(w.get("window_minutes") or 0)
                     codex_win = f"{m//1440}d" if m and m % 1440 == 0 else (f"{m//60}h" if m and m % 60 == 0 else "win")
+                    rst_raw = w.get("resets_at")
+                    try:
+                        if rst_raw is not None and float(rst_raw) < now:
+                            codex_stale = True
+                    except Exception: pass
                     break
             except Exception: continue
         if codex_rem is not None: break
@@ -53,14 +66,24 @@ def add_profile(label, path_obj):
     except Exception: rp = str(path_obj)
     if rp in seen_paths: return
     seen_paths.add(rp)
-    profiles[label] = path_obj
+    key = label
+    n = 2
+    while key in profiles:
+        key = f"{label}-{n}"
+        n += 1
+    profiles[key] = path_obj
 
 add_profile("default", root / ".claude")
 for d in sorted(root.glob(".claude-*")):
     if d.is_dir():
         add_profile(d.name.replace(".claude-", ""), d)
+seen_parents = set()
 for parent_dir in [root / "Projects", root / "projects", root / "src", root / "work"]:
     if not parent_dir.is_dir(): continue
+    try: prp = str(parent_dir.resolve())
+    except Exception: prp = str(parent_dir)
+    if prp in seen_parents: continue
+    seen_parents.add(prp)
     for sub in sorted(parent_dir.iterdir()):
         if not sub.is_dir(): continue
         cfg_files = [sub / "mise.toml", sub / ".envrc", *list(sub.glob("*/.envrc"))[:10], *list(sub.glob("*/mise.toml"))[:10]]
@@ -105,38 +128,46 @@ def write_private_json(p, obj):
         json.dump(obj, f)
 
 def fetch_claude_quota(cdir):
-    if os.environ.get("HERDR_CLAUDE_OAUTH_QUOTA") == "0":
+    if "--no-oauth" in sys.argv[1:] or os.environ.get("HERDR_CLAUDE_OAUTH_QUOTA") == "0":
         return None
     cache_dir = root / ".cache/herdr"
-    cache_p = cache_dir / f"claude-quota-{hashlib.sha256(str(cdir).encode()).hexdigest()[:8]}.json"
+    cache_p = cache_dir / f"claude-limits-{hashlib.sha256(str(cdir).encode()).hexdigest()[:8]}.json"
+    cached_list = None
     try:
-        if cache_p.is_file() and not cache_p.is_symlink() and (now - cache_p.stat().st_mtime) < 60:
-            return json.loads(cache_p.read_text("utf-8"))
-    except Exception: pass
+        if cache_p.is_file() and not cache_p.is_symlink():
+            cached_list = json.loads(cache_p.read_text("utf-8"))
+            if (now - cache_p.stat().st_mtime) < 60 and isinstance(cached_list, list):
+                rems = [round(float(x["remaining_percent"])) for x in cached_list if isinstance(x, dict) and x.get("remaining_percent") is not None]
+                return {"rem": min(rems) if rems else None}
+    except Exception:
+        cached_list = None
     tok = read_claude_token(cdir)
     if not tok:
-        try: write_private_json(cache_p, {"rem": None})
-        except Exception: pass
         return None
     try:
         req = urllib.request.Request(
             "https://api.anthropic.com/api/oauth/usage",
-            headers={"Authorization": f"Bearer {tok}", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.0"},
+            headers={"Authorization": f"Bearer {tok}", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "herdr-mods/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=2.5) as r:
+        with urllib.request.urlopen(req, timeout=1.8) as r:
             data = json.loads(r.read().decode("utf-8"))
+        limits = []
         rem_vals = []
-        for k in ("five_hour", "seven_day"):
+        for k, lbl in (("five_hour", "5h"), ("seven_day", "7d")):
             w = data.get(k)
             if isinstance(w, dict) and w.get("utilization") is not None:
-                rem_vals.append(round(max(0.0, 100.0 - float(w["utilization"]))))
-        out = {"rem": min(rem_vals) if rem_vals else None}
-        try: write_private_json(cache_p, out)
+                u = float(w["utilization"])
+                rem = round(max(0.0, 100.0 - u), 1)
+                rem_vals.append(round(rem))
+                limits.append({"label": lbl, "used_percent": u, "remaining_percent": rem, "reset_in": "-"})
+        try: write_private_json(cache_p, limits)
         except Exception: pass
-        return out
+        return {"rem": min(rem_vals) if rem_vals else None}
     except Exception:
-        try: write_private_json(cache_p, {"rem": None})
-        except Exception: pass
+        if isinstance(cached_list, list) and cached_list:
+            rems = [round(float(x["remaining_percent"])) for x in cached_list if isinstance(x, dict) and x.get("remaining_percent") is not None]
+            if rems:
+                return {"rem": min(rems), "stale": True}
         return None
 
 claude_counts = {}
@@ -161,6 +192,7 @@ for label, cdir in profiles.items():
 print(json.dumps({
     "codex_rem": codex_rem,
     "codex_win": codex_win,
+    "codex_stale": codex_stale,
     "claude_counts": claude_counts,
     "claude_quotas": claude_quotas,
 }, ensure_ascii=False))
@@ -185,10 +217,9 @@ export default class WorkspaceStatusAgy extends View {
     this.lastMachine = on;
     if (this.loadingMachines.has(mk)) return;
     this.loadingMachines.add(mk);
-    const folder = space?.folder ?? "";
     cx.spawn(async (cx) => {
       try {
-        const res = await exec("python3", ["-c", PY_STATUS_BAR, folder], { on, timeout: 6000 });
+        const res = await exec("python3", ["-c", PY_STATUS_BAR], { on, timeout: 10000 });
         if (res.code === 0) this.usageByMachine[mk] = JSON.parse(res.stdout);
       } catch {
         // Ignore transient status poll failure
@@ -220,14 +251,14 @@ export default class WorkspaceStatusAgy extends View {
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
 
     const u = this.usageByMachine[curMachine ?? ""];
-    const codexText = u?.codex_rem != null ? `${u.codex_win || "5h"} ${u.codex_rem}%` : null;
+    const codexText = u?.codex_rem != null ? `${u.codex_win || "5h"} ${u.codex_rem}%${u.codex_stale ? " (exp)" : ""}` : null;
     const quotaEntries = Object.entries(u?.claude_quotas ?? {});
     const profEntries = Object.entries(u?.claude_counts ?? {});
     const claudeLow = quotaEntries.some(([, rem]) => Number(rem) <= 15);
     const claudeText = quotaEntries.length
       ? quotaEntries.map(([k, v]) => `${k} ${v}%`).join(" · ")
       : profEntries.length
-      ? profEntries.map(([k, v]) => `${k} ${v}`).join(" · ")
+      ? profEntries.map(([k, v]) => `${k} ${v} sess`).join(" · ")
       : null;
 
     return h_flex()
