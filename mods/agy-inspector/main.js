@@ -64,9 +64,9 @@ def tail_jsonl(p, limit=30):
 def sum_step(s):
     tools = [str(tc.get("name")) for tc in (s.get("tool_calls") or []) if isinstance(tc, dict) and tc.get("name")]
     full = str(s.get("content") or "").strip()
-    clean = re.sub(r"<ADDITIONAL_METADATA>[\s\S]*?</ADDITIONAL_METADATA>", "", full)
+    clean = re.sub(r"<ADDITIONAL_METADATA>[\\s\\S]*?</ADDITIONAL_METADATA>", "", full)
     clean = re.sub(r"</?USER_REQUEST>", "", clean)
-    clean = re.sub(r"(?:Created|Completed) At:\s*\S+(?:\s*Command exited with code \d+\.?)?", "", clean)
+    clean = re.sub(r"(?:Created|Completed) At:\\s*\\S+(?:\\s*Command exited with code \\d+\\.?)?", "", clean)
     prev = " ".join(clean.split())
     if len(prev) > 140: prev = prev[:137] + "..."
     return {"step": s.get("step_index"), "type": s.get("type"), "status": s.get("status"), "tools": tools, "preview": prev, "full": full[:1500]}
