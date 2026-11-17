@@ -13,6 +13,7 @@ now = time.time()
 # 1. Codex rate_limits (walk YYYY/MM/DD descending to avoid scanning thousands of files)
 codex_rem = None
 codex_win = None
+codex_rst = None
 codex_stale = False
 sessions_dir = root / ".codex/sessions"
 if sessions_dir.is_dir():
@@ -50,8 +51,15 @@ if sessions_dir.is_dir():
                     codex_win = f"{m//1440}d" if m and m % 1440 == 0 else (f"{m//60}h" if m and m % 60 == 0 else "win")
                     rst_raw = w.get("resets_at")
                     try:
-                        if rst_raw is not None and float(rst_raw) < now:
-                            codex_stale = True
+                        if rst_raw is not None:
+                            d_sec = int(float(rst_raw) - now)
+                            if d_sec < 0:
+                                codex_stale = True
+                            else:
+                                days, r_s = divmod(d_sec, 86400)
+                                hrs, r_s = divmod(r_s, 3600)
+                                mins = r_s // 60
+                                codex_rst = f"{days}d {hrs}h" if days > 0 else (f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m")
                     except Exception: pass
                     break
             except Exception: continue
@@ -192,6 +200,7 @@ for label, cdir in profiles.items():
 print(json.dumps({
     "codex_rem": codex_rem,
     "codex_win": codex_win,
+    "codex_rst": codex_rst,
     "codex_stale": codex_stale,
     "claude_counts": claude_counts,
     "claude_quotas": claude_quotas,
@@ -251,15 +260,22 @@ export default class WorkspaceStatusAgy extends View {
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
 
     const u = this.usageByMachine[curMachine ?? ""];
-    const codexText = u?.codex_rem != null ? `${u.codex_win || "5h"} ${u.codex_rem}%${u.codex_stale ? " (exp)" : ""}` : null;
+    const codexRem = u?.codex_rem;
+    const codexText = codexRem != null ? `${u.codex_win || "5h"} ${codexRem}%${u.codex_stale ? " (exp)" : ""}` : null;
+    const codexTip = codexRem != null
+      ? `Codex ${u.codex_win || "5h"}: ${codexRem}% left${u.codex_rst ? ` (reset in ${u.codex_rst})` : ""} — click for details`
+      : "Codex quota — click for details";
     const quotaEntries = Object.entries(u?.claude_quotas ?? {});
     const profEntries = Object.entries(u?.claude_counts ?? {});
-    const claudeLow = quotaEntries.some(([, rem]) => Number(rem) <= 15);
+    const claudeMin = quotaEntries.length ? Math.min(...quotaEntries.map(([, rem]) => Number(rem))) : null;
+    const claudeLow = claudeMin != null && claudeMin <= 15;
+    const claudeWarn = claudeMin != null && claudeMin <= 30;
     const claudeText = quotaEntries.length
       ? quotaEntries.map(([k, v]) => `${k} ${v}%`).join(" · ")
       : profEntries.length
       ? profEntries.map(([k, v]) => `${k} ${v} sess`).join(" · ")
       : null;
+    const healthColor = (pct, stale) => (stale ? t.dim : pct <= 15 ? t.blocked : pct <= 30 ? t.accent : t.working);
 
     return h_flex()
       .size_full()
@@ -291,14 +307,15 @@ export default class WorkspaceStatusAgy extends View {
             .px(6)
             .py(1)
             .rounded(4)
-            .text_color(u.codex_rem <= 15 ? t.blocked : t.muted)
+            .text_color(u.codex_rem <= 15 ? t.blocked : u.codex_rem <= 30 ? t.accent : t.muted)
             .cursor_pointer()
-            .tooltip("Codex quota — click for details")
+            .tooltip(codexTip)
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => {
               cx.stop_propagation();
               run("mod.open", { name: "model-usage" });
             })
+            .child(div().size(5).rounded(3).flex_none().bg(healthColor(u.codex_rem, u.codex_stale)))
             .child(image("icons/codex.svg").w(12).h(12).flex_none())
             .child(codexText)
         )
@@ -312,7 +329,7 @@ export default class WorkspaceStatusAgy extends View {
             .px(6)
             .py(1)
             .rounded(4)
-            .text_color(claudeLow ? t.blocked : t.muted)
+            .text_color(claudeLow ? t.blocked : claudeWarn ? t.accent : t.muted)
             .cursor_pointer()
             .tooltip("Claude Code quota — click for details")
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -320,6 +337,7 @@ export default class WorkspaceStatusAgy extends View {
               cx.stop_propagation();
               run("mod.open", { name: "model-usage" });
             })
+            .when(claudeMin != null, (e) => e.child(div().size(5).rounded(3).flex_none().bg(healthColor(claudeMin, false))))
             .child(image("icons/claude.svg").w(12).h(12).flex_none())
             .child(claudeText)
         )

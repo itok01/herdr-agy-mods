@@ -474,6 +474,7 @@ export default class AgentsAgy extends View {
               conversationId: k.conv_id,
               tab: k.kind === "subagent" ? "subagents" : "board",
               subagentId: k.sid ?? null,
+              member: k.kind === "swarm" ? k.name : null,
               terminal: s.parentAddr ?? null,
               machine: s.machine ?? null,
             },

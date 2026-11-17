@@ -218,6 +218,7 @@ export default class AgyInspector extends View {
     this.selectedId = p.conversationId ?? shared("agy.selectedConv") ?? null;
     this.initialConvId = this.selectedId;
     this.boundTerminal = p.terminal ?? null;
+    this.focusedMember = p.member ? String(p.member).replace(/^@/, "") : null;
     this.machine = Object.prototype.hasOwnProperty.call(p, "machine") ? p.machine : undefined;
     this.reqSeq = 0;
     if (shared("agy.selectedConv")) setShared("agy.selectedConv", null);
@@ -227,10 +228,11 @@ export default class AgyInspector extends View {
     this.loading = false;
     this.sending = false;
     this.typing = false;
-    this.message = "";
+    this.message = this.focusedMember && this.boundTerminal ? `@${this.focusedMember} ` : "";
     this.handle = cx.focus_handle();
     this.handle.focus();
     this.input = InputState.new({ placeholder: "Send to parent agy PTY (e.g. @worker ...)..." });
+    if (this.message) this.input.set_value(this.message);
     this.input.on("change", (_e, cx) => {
       this.message = this.input.value();
       cx.notify();
@@ -733,8 +735,9 @@ export default class AgyInspector extends View {
             .w_full()
             .gap(4)
             .children(
-              members.map((m) =>
-                h_flex()
+              members.map((m) => {
+                const isFocusedMember = this.focusedMember && m.name === this.focusedMember;
+                return h_flex()
                   .id(`roster-${m.name}`)
                   .w_full()
                   .px(10)
@@ -744,7 +747,7 @@ export default class AgyInspector extends View {
                   .rounded(8)
                   .bg(t.surface ?? t.raised)
                   .border_1()
-                  .border_color(t.border)
+                  .border_color(isFocusedMember ? t.accent : t.border)
                   .cursor_pointer()
                   .tooltip(`Click to mention @${m.name} in message`)
                   .hover((el) => el.bg(t.hover))
@@ -774,8 +777,8 @@ export default class AgyInspector extends View {
                   )
                   .child(div().flex_1())
                   .child(div().text_size(11).text_color(t.dim).child(`read #${m.last_read_seq ?? 0}`))
-                  .child(statusPill(m.wake_mode || m.phase, m.killed, t))
-              )
+                  .child(statusPill(m.wake_mode || m.phase, m.killed, t));
+              })
             )
         )
       )
@@ -792,7 +795,7 @@ export default class AgyInspector extends View {
                     .rounded(8)
                     .bg(t.surface ?? t.raised)
                     .border_1()
-                    .border_color(t.border)
+                    .border_color(this.focusedMember && b.agent === this.focusedMember ? t.accent : t.border)
                     .child(
                       h_flex()
                         .w_full()
