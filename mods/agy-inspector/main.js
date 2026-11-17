@@ -116,12 +116,8 @@ for d in candidates:
             if "ALIVE" in raw_sub_st and sub_tr and sub_tr.is_file():
                 try:
                     import time as _time
-                    if (_time.time() - sub_tr.stat().st_mtime) > 300:
+                    if (_time.time() - sub_tr.stat().st_mtime) > 600:
                         eff_state = "waiting"
-                    elif sub_steps:
-                        ls = sub_steps[-1]
-                        if ls.get("type") == "PLANNER_RESPONSE" and ls.get("status") == "DONE" and not ls.get("tool_calls"):
-                            eff_state = "waiting"
                 except Exception:
                     pass
             subs.append({

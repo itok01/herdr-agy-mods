@@ -153,14 +153,8 @@ for d in brain.iterdir():
                 sub_tr = brain / sid / ".system_generated/logs/transcript.jsonl"
                 if "/" not in sid and ".." not in sid and sub_tr.is_file():
                     try:
-                        if (now - sub_tr.stat().st_mtime) > 300:
+                        if (now - sub_tr.stat().st_mtime) > 600:
                             st = "idle"
-                        else:
-                            last_steps = tail_jsonl(sub_tr, 1)
-                            if last_steps:
-                                ls = last_steps[-1]
-                                if ls.get("type") == "PLANNER_RESPONSE" and ls.get("status") == "DONE" and not ls.get("tool_calls"):
-                                    st = "idle"
                     except Exception:
                         pass
             elif "ERR" in raw_st or "FAIL" in raw_st or "BLOCK" in raw_st:
