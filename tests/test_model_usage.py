@@ -1,71 +1,123 @@
 import json
+import os
+import re
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
-import model_usage  # noqa: E402
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-class ModelUsageTest(unittest.TestCase):
-    def test_collect_usage_reads_codex_rate_limits_and_agy(self) -> None:
+def extract_py(mod_name: str, var_name: str) -> str:
+    txt = (REPO_ROOT / "mods" / mod_name / "main.js").read_text(encoding="utf-8")
+    m = re.search(rf"const {re.escape(var_name)} = `([\s\S]*?)`;", txt)
+    if not m:
+        raise AssertionError(f"{var_name} not found in mods/{mod_name}/main.js")
+    raw = m.group(1)
+    return raw.replace("\\\\", "\\").replace("\\x24", "$")
+
+
+class ModelUsageEmbeddedTest(unittest.TestCase):
+    def test_py_usage_reads_3level_codex_and_deduplicates_claude_messages(self) -> None:
+        py_code = extract_py("model-usage", "PY_USAGE")
         with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            (home / ".gemini" / "antigravity-cli" / "presence").mkdir(parents=True)
-            (home / ".gemini" / "antigravity-cli" / "brain" / "c1" / ".system_generated" / "logs").mkdir(parents=True)
-            (home / ".gemini" / "antigravity-cli" / "presence" / "c1.lock").write_text("", encoding="utf-8")
-            (home / ".gemini" / "antigravity-cli" / "brain" / "c1" / ".system_generated" / "logs" / "transcript.jsonl").write_text(
-                "{}\n", encoding="utf-8"
-            )
-            (home / ".gemini" / "antigravity-cli" / "settings.json").write_text(
-                json.dumps({"defaultModel": "gemini-4-hydrogen-medium"}), encoding="utf-8"
+            root = Path(tmp)
+            codex_day = root / ".codex/sessions/2026/11/17"
+            codex_day.mkdir(parents=True)
+            future_rst = int(time.time()) + 3600
+            (codex_day / "s1.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "payload": {
+                                    "info": {
+                                        "total_token_usage": {
+                                            "input_tokens": 100,
+                                            "cached_input_tokens": 20,
+                                            "output_tokens": 30,
+                                            "total_tokens": 150,
+                                        }
+                                    },
+                                    "rate_limits": {
+                                        "plan_type": "plus",
+                                        "primary": {"used_percent": 25.0, "window_minutes": 300, "resets_at": future_rst},
+                                        "secondary": {"used_percent": None, "window_minutes": 10080},
+                                    },
+                                }
+                            }
+                        )
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
             )
 
-            (home / ".codex" / "sessions" / "2026").mkdir(parents=True)
-            now = time.time()
-            event = {
-                "type": "event_msg",
-                "payload": {
-                    "type": "token_count",
-                    "info": {
-                        "total_token_usage": {
-                            "input_tokens": 1000,
-                            "cached_input_tokens": 500,
-                            "output_tokens": 200,
-                            "reasoning_output_tokens": 50,
-                            "total_tokens": 1200,
+            claude_proj = root / ".claude/projects/demo"
+            claude_proj.mkdir(parents=True)
+            # Duplicate message.id should be deduplicated (keep max 150, not 100 + 150)
+            (claude_proj / "c1.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"message": {"id": "msg_1", "usage": {"input_tokens": 100, "output_tokens": 10}}}),
+                        json.dumps({"message": {"id": "msg_1", "usage": {"input_tokens": 140, "output_tokens": 10}}}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            env = {**os.environ, "HERDR_USAGE_HOME": str(root), "HERDR_CLAUDE_OAUTH_QUOTA": "0"}
+            proc = subprocess.run(
+                [sys.executable, "-c", py_code, "--no-oauth"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["codex"]["plan_type"], "plus")
+            self.assertEqual(len(data["codex"]["rate_limits"]), 1)
+            self.assertEqual(data["codex"]["rate_limits"][0]["remaining_percent"], 75.0)
+            self.assertFalse(data["codex"]["rate_limits"][0]["stale"])
+            self.assertEqual(data["claude"]["profiles"]["default"]["tokens_24h"], 150)
+
+    def test_py_status_bar_handles_null_and_expired_codex_limits(self) -> None:
+        py_code = extract_py("workspace-status-agy", "PY_STATUS_BAR")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            codex_day = root / ".codex/sessions/2026/11/17"
+            codex_day.mkdir(parents=True)
+            past_rst = int(time.time()) - 600
+            (codex_day / "s1.jsonl").write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "rate_limits": {
+                                "primary": {"used_percent": None, "window_minutes": 300},
+                                "secondary": {"used_percent": 40.0, "window_minutes": 10080, "resets_at": past_rst},
+                            }
                         }
-                    },
-                    "rate_limits": {
-                        "plan_type": "prolite",
-                        "primary": {"used_percent": 25.0, "window_minutes": 10080, "resets_at": now + 3600},
-                        "secondary": None,
-                    },
-                },
-            }
-            (home / ".codex" / "sessions" / "2026" / "s1.jsonl").write_text(
-                json.dumps(event) + "\n", encoding="utf-8"
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            (home / ".claude" / "projects" / "p1").mkdir(parents=True)
-            (home / ".claude" / "projects" / "p1" / "chat.jsonl").write_text("{}\n", encoding="utf-8")
-
-            with patch.object(
-                model_usage,
-                "collect_hc_agents",
-                return_value=[{"address": "t1", "agent": "codex", "status": "working", "turn": 5}],
-            ):
-                res = model_usage.collect_usage(home=home, now=now)
-
-            self.assertEqual(res["codex"]["plan_type"], "prolite")
-            self.assertEqual(res["codex"]["rate_limits"][0]["remaining_percent"], 75.0)
-            self.assertEqual(res["codex"]["tokens"]["total"], 1200)
-            self.assertEqual(res["agy"]["active_locks"], 1)
-            self.assertEqual(res["agy"]["recent_24h_convs"], 1)
-            self.assertEqual(res["claude"]["recent_24h_sessions"], 1)
-            self.assertEqual(res["agent_summary"]["codex"]["working"], 1)
+            env = {**os.environ, "HERDR_USAGE_HOME": str(root), "HERDR_CLAUDE_OAUTH_QUOTA": "0"}
+            proc = subprocess.run(
+                [sys.executable, "-c", py_code, "--no-oauth"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["codex_rem"], 60)
+            self.assertEqual(data["codex_win"], "7d")
+            self.assertTrue(data["codex_stale"])
 
 
 if __name__ == "__main__":
