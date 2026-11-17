@@ -126,6 +126,8 @@ for d in candidates:
             "last_read_seq": info.get("last_read_seq"),
             "killed": bool(info.get("killed", False)),
         })
+    if not (members or subs or board) and d.name != sel:
+        continue
     mtime = d.stat().st_mtime
     for c in (sg / "logs/transcript.jsonl", sg / "swarm/board.jsonl"):
         if c.exists(): mtime = max(mtime, c.stat().st_mtime)
@@ -225,6 +227,7 @@ export default class AgyInspector extends View {
     this.expandedSub = p.subagentId ?? null;
     this.expandedStep = null;
     this.showKilled = false;
+    this.userPickedTab = Boolean(p.tab);
     this.tab = p.tab ?? "board";
     this.loading = false;
     this.sending = false;
@@ -272,6 +275,10 @@ export default class AgyInspector extends View {
           this.data = JSON.parse(res.stdout);
           if (!this.selectedId && this.data?.selected?.conversation_id) {
             this.selectedId = this.data.selected.conversation_id;
+          }
+          const selConv = this.data?.selected;
+          if (!this.userPickedTab && selConv && !(selConv.board?.length) && !(selConv.members?.length) && (selConv.subagents?.length)) {
+            this.tab = "subagents";
           }
           this.error = null;
         } else {
@@ -471,9 +478,12 @@ export default class AgyInspector extends View {
                 .px(8)
                 .py(4)
                 .rounded(6)
+                .border_1()
+                .border_color(active ? t.accent : t.border)
                 .cursor_pointer()
-                .bg(active ? t.accent : t.raised)
-                .text_color(active ? t.solid_foreground : t.foreground)
+                .bg(active ? t.selected : t.raised)
+                .text_color(active ? t.foreground : t.muted)
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
                 .on_click((_e, cx) => {
                   cx.stop_propagation();
                   this.selectedId = c.conversation_id;
@@ -482,7 +492,7 @@ export default class AgyInspector extends View {
                   this.refresh(cx);
                 })
                 .when(Boolean(c.active), (e) =>
-                  e.child(div().size(6).rounded(3).flex_none().bg(active ? t.solid_foreground : (t.working ?? t.accent)))
+                  e.child(div().size(6).rounded(3).flex_none().bg(t.working ?? t.accent))
                 )
                 .child(`${label} (${c.members}/${c.subagents})`);
             })
@@ -516,6 +526,7 @@ export default class AgyInspector extends View {
                 .hover((s) => s.bg(t.hover))
                 .on_click((_e, cx) => {
                   cx.stop_propagation();
+                  this.userPickedTab = true;
                   this.tab = id;
                   cx.notify();
                 })
@@ -618,8 +629,9 @@ export default class AgyInspector extends View {
         return ak - bk;
       });
       if (!subs.length) return div().text_color(t.dim).child("No subagents in this conversation.");
-      const killedSubCount = subs.filter((s) => isSubKilled(s) && s.conversation_id !== this.expandedSub).length;
-      const visibleSubs = this.showKilled ? subs : subs.filter((s) => !isSubKilled(s) || s.conversation_id === this.expandedSub);
+      const hasAliveSubs = subs.some((s) => !isSubKilled(s));
+      const killedSubCount = hasAliveSubs ? subs.filter((s) => isSubKilled(s) && s.conversation_id !== this.expandedSub).length : 0;
+      const visibleSubs = (!hasAliveSubs || this.showKilled) ? subs : subs.filter((s) => !isSubKilled(s) || s.conversation_id === this.expandedSub);
       return v_flex()
         .w_full()
         .gap(6)

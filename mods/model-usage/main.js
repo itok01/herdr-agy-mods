@@ -278,7 +278,9 @@ function barRow(label, usedPct, resetIn, t, stale = false) {
         .child(div().text_size(11).text_color(t.dim).child(`(${used.toFixed(1)}% used)`))
         .when(stale, (e) => e.child(div().text_size(10.5).text_color(t.dim).child("stale")))
         .child(div().flex_1())
-        .child(div().text_size(11).text_color(t.dim).child(resetIn === "expired" ? "expired" : `reset in ${resetIn}`))
+        .when(resetIn && resetIn !== "-", (e) =>
+          e.child(div().text_size(11).text_color(t.dim).child(resetIn === "expired" ? "expired" : `reset in ${resetIn}`))
+        )
     )
     .child(
       h_flex()
