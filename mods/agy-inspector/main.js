@@ -621,9 +621,6 @@ export default class AgyInspector extends View {
         return st.includes("kill") || st.includes("done") || st.includes("stop");
       };
       const subs = (sel.subagents ?? []).slice().sort((a, b) => {
-        const af = this.expandedSub && a.conversation_id === this.expandedSub ? 1 : 0;
-        const bf = this.expandedSub && b.conversation_id === this.expandedSub ? 1 : 0;
-        if (af !== bf) return bf - af;
         const ak = isSubKilled(a) ? 1 : 0;
         const bk = isSubKilled(b) ? 1 : 0;
         return ak - bk;
