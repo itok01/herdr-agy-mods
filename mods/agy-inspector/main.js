@@ -224,6 +224,7 @@ export default class AgyInspector extends View {
     if (shared("agy.selectedConv")) setShared("agy.selectedConv", null);
     this.expandedSub = p.subagentId ?? null;
     this.expandedStep = null;
+    this.showKilled = false;
     this.tab = p.tab ?? "board";
     this.loading = false;
     this.sending = false;
@@ -724,7 +725,17 @@ export default class AgyInspector extends View {
           })
         );
     }
-    const members = sel.members ?? [];
+    const members = (sel.members ?? []).slice().sort((a, b) => {
+      const af = this.focusedMember && a.name === this.focusedMember ? 1 : 0;
+      const bf = this.focusedMember && b.name === this.focusedMember ? 1 : 0;
+      if (af !== bf) return bf - af;
+      const ak = a.killed ? 1 : 0;
+      const bk = b.killed ? 1 : 0;
+      if (ak !== bk) return ak - bk;
+      return String(a.name).localeCompare(String(b.name));
+    });
+    const killedCount = members.filter((m) => m.killed && m.name !== this.focusedMember).length;
+    const visibleMembers = this.showKilled ? members : members.filter((m) => !m.killed || m.name === this.focusedMember);
     const board = sel.board ?? [];
     return v_flex()
       .w_full()
@@ -735,7 +746,7 @@ export default class AgyInspector extends View {
             .w_full()
             .gap(4)
             .children(
-              members.map((m) => {
+              visibleMembers.map((m) => {
                 const isFocusedMember = this.focusedMember && m.name === this.focusedMember;
                 return h_flex()
                   .id(`roster-${m.name}`)
@@ -779,6 +790,25 @@ export default class AgyInspector extends View {
                   .child(div().text_size(11).text_color(t.dim).child(`read #${m.last_read_seq ?? 0}`))
                   .child(statusPill(m.wake_mode || m.phase, m.killed, t));
               })
+            )
+            .when(killedCount > 0, (el) =>
+              el.child(
+                div()
+                  .id("toggle-killed-members")
+                  .px(8)
+                  .py(3)
+                  .rounded(6)
+                  .text_size(11)
+                  .text_color(t.dim)
+                  .cursor_pointer()
+                  .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                  .on_click((_e, cx) => {
+                    cx.stop_propagation();
+                    this.showKilled = !this.showKilled;
+                    cx.notify();
+                  })
+                  .child(this.showKilled ? `Hide ${killedCount} killed members` : `Show ${killedCount} killed members`)
+              )
             )
         )
       )
