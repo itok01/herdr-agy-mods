@@ -174,15 +174,15 @@ function badgeColor(phase, killed, t) {
 }
 
 function statusPill(phase, killed, t) {
-  if (killed) {
+  const p = String(phase || "").toLowerCase();
+  if (killed || p.includes("kill") || p.includes("stop")) {
     return h_flex()
       .gap(5)
       .items_center()
       .child(div().size(6).rounded(3).bg(t.dim))
       .child(div().text_size(11).text_color(t.dim).child("killed"));
   }
-  const p = String(phase || "").toLowerCase();
-  if (p.includes("work") || p.includes("run")) {
+  if (p.includes("alive") || p.includes("work") || p.includes("run") || p.includes("active") || p.includes("progress")) {
     return h_flex()
       .gap(5)
       .items_center()
@@ -605,13 +605,26 @@ export default class AgyInspector extends View {
       return div().p(8).text_color(t.dim).child("No agy brain directories found on this machine.");
     }
     if (this.tab === "subagents") {
-      const subs = sel.subagents ?? [];
+      const isSubKilled = (s) => {
+        const st = String(s.state || "").toLowerCase();
+        return st.includes("kill") || st.includes("done") || st.includes("stop");
+      };
+      const subs = (sel.subagents ?? []).slice().sort((a, b) => {
+        const af = this.expandedSub && a.conversation_id === this.expandedSub ? 1 : 0;
+        const bf = this.expandedSub && b.conversation_id === this.expandedSub ? 1 : 0;
+        if (af !== bf) return bf - af;
+        const ak = isSubKilled(a) ? 1 : 0;
+        const bk = isSubKilled(b) ? 1 : 0;
+        return ak - bk;
+      });
       if (!subs.length) return div().text_color(t.dim).child("No subagents in this conversation.");
+      const killedSubCount = subs.filter((s) => isSubKilled(s) && s.conversation_id !== this.expandedSub).length;
+      const visibleSubs = this.showKilled ? subs : subs.filter((s) => !isSubKilled(s) || s.conversation_id === this.expandedSub);
       return v_flex()
         .w_full()
         .gap(6)
         .children(
-          subs.map((s) => {
+          visibleSubs.map((s) => {
             const open = this.expandedSub === s.conversation_id;
             return v_flex()
               .w_full()
@@ -673,6 +686,25 @@ export default class AgyInspector extends View {
                 )
               );
           })
+        )
+        .when(killedSubCount > 0, (el) =>
+          el.child(
+            div()
+              .id("toggle-killed-subs")
+              .px(8)
+              .py(3)
+              .rounded(6)
+              .text_size(11)
+              .text_color(t.dim)
+              .cursor_pointer()
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.showKilled = !this.showKilled;
+                cx.notify();
+              })
+              .child(this.showKilled ? `Hide ${killedSubCount} killed subagents` : `Show ${killedSubCount} killed subagents`)
+          )
         );
     }
     if (this.tab === "transcript") {

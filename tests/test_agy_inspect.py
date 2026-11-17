@@ -92,8 +92,25 @@ class AgyInspectEmbeddedTest(unittest.TestCase):
             conv = brain / "44444444-4444-4444-4444-444444444444"
             sg = conv / ".system_generated"
             (sg / "swarm").mkdir(parents=True)
+            (sg / "subagents").mkdir(parents=True)
             (sg / "swarm/members.json").write_text(
                 json.dumps({"title": "Tree Swarm", "members": {"a": {"phase": "working"}}}),
+                encoding="utf-8",
+            )
+            (sg / "subagents/s_alive.json").write_text(
+                json.dumps({
+                    "conversationId": "66666666-6666-6666-6666-666666666666",
+                    "state": "SUBAGENT_STATE_ALIVE",
+                    "subagentDescriptor": {"role": "Analyst", "typeName": "research"},
+                }),
+                encoding="utf-8",
+            )
+            (sg / "subagents/s_killed.json").write_text(
+                json.dumps({
+                    "conversationId": "77777777-7777-7777-7777-777777777777",
+                    "state": "SUBAGENT_STATE_KILLED",
+                    "subagentDescriptor": {"role": "Old", "typeName": "research"},
+                }),
                 encoding="utf-8",
             )
             bad = brain / "55555555-5555-5555-5555-555555555555" / ".system_generated" / "swarm"
@@ -110,8 +127,11 @@ class AgyInspectEmbeddedTest(unittest.TestCase):
             )
             rows = json.loads(proc.stdout)
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["kids"][0]["name"], "@a")
-            self.assertEqual(rows[0]["kids"][0]["status"], "working")
+            kids = {k["name"]: k for k in rows[0]["kids"]}
+            self.assertEqual(kids["@a"]["status"], "working")
+            self.assertEqual(kids["Analyst"]["status"], "working")
+            self.assertEqual(kids["Old"]["status"], "idle")
+            self.assertTrue(kids["Old"]["killed"])
 
 
 if __name__ == "__main__":

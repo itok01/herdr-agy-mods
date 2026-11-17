@@ -147,7 +147,13 @@ for d in brain.iterdir():
                 desc = {}
             sid = str(sd.get("conversationId") or sp.stem)
             raw_st = str(sd.get("state") or "").upper()
-            st = "working" if raw_st in ("RUNNING", "WORKING", "ACTIVE") else ("blocked" if "ERR" in raw_st or "FAIL" in raw_st else "idle")
+            is_killed = "KILL" in raw_st or "DONE" in raw_st or "COMPLET" in raw_st or "STOP" in raw_st
+            if not is_killed and ("ALIVE" in raw_st or "RUN" in raw_st or "WORK" in raw_st or "ACTIVE" in raw_st or "PROGRESS" in raw_st or "GENERAT" in raw_st):
+                st = "working"
+            elif "ERR" in raw_st or "FAIL" in raw_st or "BLOCK" in raw_st:
+                st = "blocked"
+            else:
+                st = "idle"
             kids.append({
                 "id": f"sub:{sid}",
                 "sid": sid,
@@ -156,7 +162,7 @@ for d in brain.iterdir():
                 "name": desc.get("role") or desc.get("typeName") or sid[:8],
                 "detail": desc.get("typeName") or "",
                 "status": st,
-                "killed": False,
+                "killed": is_killed,
             })
 
     if kids:
