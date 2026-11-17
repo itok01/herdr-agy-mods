@@ -591,7 +591,7 @@ export default class AgyInspector extends View {
                     cx.notify();
                   })
                   .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
-                  .child(svg("mods/agy-inspector/subagent.svg").size(12).flex_none().text_color(t.accent))
+                  .child(image("icons/antigravity.svg").w(13).h(13).flex_none())
                   .child(div().font_semibold().child(s.role || s.type_name || "subagent"))
                   .child(div().text_size(11).text_color(t.dim).child(String(s.conversation_id).slice(0, 8)))
                   .child(div().flex_1())
