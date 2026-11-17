@@ -115,7 +115,7 @@ for d in brain.iterdir():
 
     kids = []
     for name, info in (mem_raw.get("members") or {}).items():
-        if not isinstance(info, dict): continue
+        if name == "coordinator" or not isinstance(info, dict): continue
         killed = bool(info.get("killed", False))
         phase = str(info.get("phase") or "")
         wake = str(info.get("wake_mode") or "")
