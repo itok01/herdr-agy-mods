@@ -76,31 +76,35 @@ if not brain.is_dir():
     print(json.dumps({"conversations": [], "selected": None}))
     sys.exit(0)
 
-# Pre-filter by directory mtime so we don't parse hundreds of old brain dirs
-candidates = [d for d in brain.iterdir() if d.is_dir() and (d / ".system_generated").is_dir()]
-candidates.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+live_agy = live_agy_set()
+all_dirs = [d for d in brain.iterdir() if d.is_dir() and (d / ".system_generated").is_dir()]
+all_dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+live_dirs = [d for d in all_dirs if d.name in live_agy]
+rest_dirs = [d for d in all_dirs if d.name not in live_agy]
+candidates = (live_dirs + rest_dirs)[:15]
 if sel:
     sel_dir = brain / sel
-    if sel_dir.is_dir() and sel_dir not in candidates[:15]:
+    if sel_dir.is_dir() and sel_dir not in candidates:
         candidates = [sel_dir] + candidates[:14]
-    else:
-        candidates = candidates[:15]
-else:
-    candidates = candidates[:15]
 
-live_agy = live_agy_set()
 items = []
 for d in candidates:
     sg = d / ".system_generated"
-    mem_raw = read_json(sg / "swarm/members.json") or {}
+    mem_raw = read_json(sg / "swarm/members.json")
+    if not isinstance(mem_raw, dict):
+        mem_raw = {}
     board = tail_jsonl(sg / "swarm/board.jsonl", 40)
     steps = tail_jsonl(sg / "logs/transcript.jsonl", 20)
     active_lock = d.name in live_agy
     subs = []
     if (sg / "subagents").is_dir():
         for sp in sorted((sg / "subagents").glob("*.json")):
-            sd = read_json(sp) or {}
-            desc = sd.get("subagentDescriptor") or {}
+            sd = read_json(sp)
+            if not isinstance(sd, dict):
+                continue
+            desc = sd.get("subagentDescriptor")
+            if not isinstance(desc, dict):
+                desc = {}
             sid = str(sd.get("conversationId") or sp.stem)
             sub_steps = tail_jsonl(brain / sid / ".system_generated/logs/transcript.jsonl", 5) if is_safe_id(sid) else []
             subs.append({
@@ -143,22 +147,22 @@ conv_list = [{"conversation_id": x["conversation_id"], "active": x["active"], "s
 print(json.dumps({"conversations": conv_list, "selected": chosen}, ensure_ascii=False))
 `;
 
-function activeMachine() {
-  const p = props();
-  if (p?.machine !== undefined && p?.machine !== null) return p.machine;
-  return spaces().find((s) => s.active)?.machine ?? null;
-}
-
 function targetAgyTerminal(boundTerminal) {
-  if (boundTerminal) return boundTerminal;
-  const f = focused();
   const all = panes();
+  const isLiveAgy = (term) => Boolean(term && all.some((p) => p.terminal === term && p.program?.key === "antigravity"));
+  if (boundTerminal) return isLiveAgy(boundTerminal) ? boundTerminal : null;
+  const f = focused();
   const focusedPane = f?.pane ? all.find((p) => p.pane === f.pane) : null;
   if (focusedPane?.terminal && focusedPane.program?.key === "antigravity") return focusedPane.terminal;
   const activeSpace = spaces().find((s) => s.active);
   const tabIds = new Set((activeSpace?.tabs ?? []).map((t) => t.id));
-  const match = all.find((p) => p.terminal && tabIds.has(p.tab) && p.program?.key === "antigravity");
-  return match?.terminal ?? null;
+  const matches = all.filter((p) => p.terminal && tabIds.has(p.tab) && p.program?.key === "antigravity");
+  return matches.length === 1 ? matches[0].terminal : null;
+}
+
+function shortErr(err) {
+  const lines = String(err || "").trim().splitlines ? String(err).trim().split(/\r?\n/) : String(err || "").trim().split(/\r?\n/);
+  return (lines.filter(Boolean).pop() || "Unknown error").slice(0, 140);
 }
 
 function badgeColor(phase, killed, t) {
@@ -214,6 +218,8 @@ export default class AgyInspector extends View {
     this.selectedId = p.conversationId ?? shared("agy.selectedConv") ?? null;
     this.initialConvId = this.selectedId;
     this.boundTerminal = p.terminal ?? null;
+    this.machine = Object.prototype.hasOwnProperty.call(p, "machine") ? p.machine : undefined;
+    this.reqSeq = 0;
     if (shared("agy.selectedConv")) setShared("agy.selectedConv", null);
     this.expandedSub = p.subagentId ?? null;
     this.expandedStep = null;
@@ -238,6 +244,11 @@ export default class AgyInspector extends View {
     cx.timer.every(4000, (cx) => this.refresh(cx));
   }
 
+  getMachine() {
+    if (this.machine !== undefined) return this.machine;
+    return spaces().find((s) => s.active)?.machine ?? null;
+  }
+
   refresh(cx) {
     if (this.loading || checking()) return;
     this.loading = true;
@@ -246,30 +257,37 @@ export default class AgyInspector extends View {
       if (requested !== this.selectedId) this.selectedId = requested;
       setShared("agy.selectedConv", null);
     }
-    const on = activeMachine();
+    const on = this.getMachine();
+    const seq = ++this.reqSeq;
     const args = ["-c", PY_INSPECT];
     if (this.selectedId) args.push(this.selectedId);
     cx.spawn(async (cx) => {
       try {
-        const res = await exec("python3", args, { on, timeout: 6000 });
+        const res = await exec("python3", args, { on, timeout: 8000 });
+        if (seq !== this.reqSeq) return;
         if (res.code === 0) {
           this.data = JSON.parse(res.stdout);
+          if (!this.selectedId && this.data?.selected?.conversation_id) {
+            this.selectedId = this.data.selected.conversation_id;
+          }
           this.error = null;
         } else {
-          this.error = res.stderr || `exit ${res.code}`;
+          this.error = shortErr(res.stderr || `exit ${res.code}`);
         }
       } catch (e) {
-        this.error = String(e);
+        if (seq === this.reqSeq) this.error = shortErr(e);
       } finally {
-        this.loading = false;
-        cx.notify();
+        if (seq === this.reqSeq) {
+          this.loading = false;
+          cx.notify();
+        }
       }
     });
   }
 
   boundTarget() {
     if (this.boundTerminal) {
-      return this.selectedId === this.initialConvId ? this.boundTerminal : null;
+      return this.selectedId === this.initialConvId ? targetAgyTerminal(this.boundTerminal) : null;
     }
     return targetAgyTerminal(null);
   }
@@ -282,16 +300,16 @@ export default class AgyInspector extends View {
     this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const res = await hc(["send", target, text]);
+        const res = await hc(["send", "--", target, text]);
         if (res.code === 0) {
           this.message = "";
           this.input.set_value("");
           this.note = `Sent to ${target}`;
         } else {
-          this.note = res.stderr || `hc send exit ${res.code}`;
+          this.note = shortErr(res.stderr || `hc send exit ${res.code}`);
         }
       } catch (e) {
-        this.note = String(e);
+        this.note = shortErr(e);
       } finally {
         this.sending = false;
         cx.notify();
@@ -304,7 +322,7 @@ export default class AgyInspector extends View {
     const t = theme();
     const convs = this.data?.conversations ?? [];
     const sel = this.data?.selected;
-    const machineLabel = activeMachine() ?? "local";
+    const machineLabel = this.getMachine() ?? "local";
     const target = this.boundTarget();
     const canSend = Boolean(this.message.trim() && target && !this.sending);
 
@@ -321,12 +339,22 @@ export default class AgyInspector extends View {
       .text_size(12.5)
       .track_focus(this.handle)
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && this.typing) {
-          this.typing = false;
-          this.handle.focus();
+        if (e.key === "escape") {
+          if (this.typing) {
+            this.typing = false;
+            this.handle.focus();
+          } else {
+            closeOverlay();
+          }
           cx.stop_propagation();
           cx.notify();
+          return;
         }
+        if (this.typing) return;
+        if (e.key === "1") { this.tab = "board"; cx.notify(); }
+        else if (e.key === "2") { this.tab = "subagents"; cx.notify(); }
+        else if (e.key === "3") { this.tab = "transcript"; cx.notify(); }
+        else if (e.key === "r") { this.refresh(cx); }
       })
       .child(
         h_flex()
@@ -512,8 +540,21 @@ export default class AgyInspector extends View {
           .flex_none()
           .p(8)
           .gap(8)
+          .items_center()
           .border_t(1)
           .border_color(t.border)
+          .child(
+            div()
+              .px(7)
+              .py(3)
+              .rounded(5)
+              .bg(t.raised)
+              .border_1()
+              .border_color(t.border)
+              .text_size(11)
+              .text_color(target ? t.foreground : t.dim)
+              .child(target ? `PTY: ${target}` : "No PTY")
+          )
           .child(
             div()
               .id("agy-steer-input")

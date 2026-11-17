@@ -2,7 +2,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, checking } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, layout, exec, checking } from "herdr";
 
 const PY_AGY_TREE = `
 import json, os, re, subprocess, time
@@ -90,9 +90,12 @@ live_map = live_agy_convs()
 for d in brain.iterdir():
     sg = d / ".system_generated"
     if not (d.is_dir() and sg.is_dir()): continue
-    mem_raw = read_json(sg / "swarm/members.json") or {}
+    mem_raw = read_json(sg / "swarm/members.json")
+    if not isinstance(mem_raw, dict):
+        mem_raw = {}
     subs_dir = sg / "subagents"
-    has_swarm = bool(mem_raw.get("members"))
+    members_dict = mem_raw.get("members")
+    has_swarm = isinstance(members_dict, dict) and bool(members_dict)
     has_subs = subs_dir.is_dir() and any(subs_dir.glob("*.json"))
     if not (has_swarm or has_subs): continue
 
@@ -136,8 +139,12 @@ for d in brain.iterdir():
 
     if subs_dir.is_dir():
         for sp in sorted(subs_dir.glob("*.json")):
-            sd = read_json(sp) or {}
-            desc = sd.get("subagentDescriptor") or {}
+            sd = read_json(sp)
+            if not isinstance(sd, dict):
+                continue
+            desc = sd.get("subagentDescriptor")
+            if not isinstance(desc, dict):
+                desc = {}
             sid = str(sd.get("conversationId") or sp.stem)
             raw_st = str(sd.get("state") or "").upper()
             st = "working" if raw_st in ("RUNNING", "WORKING", "ACTIVE") else ("blocked" if "ERR" in raw_st or "FAIL" in raw_st else "idle")
@@ -365,44 +372,72 @@ export default class AgentsAgy extends View {
         const cwd = (pane?.cwd || "").toLowerCase();
         const cwdBase = cwd ? cwd.split("/").filter(Boolean).pop() : "";
         const space = (a.space_name || "").toLowerCase();
+        const sameCwdCount = cwd ? agyList.filter((other) => {
+          const op = allPanes.find((p) => p.pane === other.pane);
+          return (op?.cwd || "").toLowerCase() === cwd;
+        }).length : 0;
         for (const c of convs) {
           const pidCwd = (c.pid_cwd || "").toLowerCase();
           const hint = (c.hint || "").toLowerCase();
           let score = 0;
-          if (pidCwd && cwd && pidCwd === cwd) score = 1000;
-          else if (cwd && hint.includes(cwd)) score = 500 + cwd.length;
-          else if (cwdBase && cwdBase.length >= 4 && hint.includes(cwdBase)) score = 200 + cwdBase.length;
-          else if (space && c.active && hint.includes(space)) score = 100;
+          let exactBind = false;
+          if (pidCwd && cwd && pidCwd === cwd) {
+            score = 1000;
+            exactBind = sameCwdCount === 1;
+          } else if (cwd && cwd.length >= 8 && hint.includes(cwd)) {
+            score = 500 + cwd.length;
+          } else if (cwdBase && cwdBase.length >= 4 && hint.includes(cwdBase)) {
+            score = 200 + cwdBase.length;
+          } else if (space && c.active && hint.includes(space)) {
+            score = 100;
+          }
           if (score > 0) {
             if (c.active) score += 50;
             if (c.active && a.status === "working") score += 40;
             if (this.stickyConv[a.address] === c.conv_id) score += 10;
-            pairs.push({ a, c, score });
+            pairs.push({ a, c, score, exactBind });
           }
         }
       }
       pairs.sort((x, y) => y.score - x.score || (y.c.mtime || 0) - (x.c.mtime || 0) || x.a.address.localeCompare(y.a.address));
       const usedAgents = new Set();
       const usedConvs = new Set();
-      for (const { a, c } of pairs) {
+      for (const { a, c, exactBind } of pairs) {
         if (usedAgents.has(a.address) || usedConvs.has(c.conv_id)) continue;
         usedAgents.add(a.address);
         usedConvs.add(c.conv_id);
         this.stickyConv[a.address] = c.conv_id;
-        const kids = c.kids
-          .filter((k) => (k.kind === "swarm" ? !k.killed : k.status === "working" || k.status === "blocked"))
-          .slice(0, 8);
+        const allFiltered = c.kids.filter((k) => (k.kind === "swarm" ? !k.killed : k.status === "working" || k.status === "blocked"));
+        const kids = allFiltered.slice(0, 8);
+        const hiddenCount = Math.max(0, allFiltered.length - kids.length);
         if (!kids.length) continue;
-        result.set(
-          a.address,
-          kids.map((k, i) => ({
+        const rows = kids.map((k, i) => ({
+          kind: "agy",
+          parentAddr: exactBind ? a.address : null,
+          rowKey: a.address,
+          machine: mk || null,
+          agy: k,
+          lines: [i === kids.length - 1 && hiddenCount === 0 ? "└" : "├"],
+        }));
+        if (hiddenCount > 0) {
+          rows.push({
             kind: "agy",
-            parentAddr: a.address,
+            parentAddr: exactBind ? a.address : null,
+            rowKey: a.address,
             machine: mk || null,
-            agy: k,
-            lines: [i === kids.length - 1 ? "└" : "├"],
-          }))
-        );
+            agy: {
+              id: `more:${c.conv_id}`,
+              conv_id: c.conv_id,
+              kind: "more",
+              name: `+${hiddenCount} more`,
+              detail: "open inspector",
+              status: "idle",
+              killed: true,
+            },
+            lines: ["└"],
+          });
+        }
+        result.set(a.address, rows);
       }
     }
     const liveAddrs = new Set(list.map((a) => a.address));
@@ -416,7 +451,7 @@ export default class AgentsAgy extends View {
     if (s.kind === "agy") {
       const k = s.agy;
       return h_flex()
-        .id(`agy-${s.parentAddr ?? ""}-${k.id}`)
+        .id(`agy-${s.rowKey ?? ""}-${k.id}`)
         .pl(39)
         .pr(8)
         .rounded(8)
@@ -507,8 +542,10 @@ export default class AgentsAgy extends View {
     const byPriority = sort.id === "priority";
 
     const agyMap = collapsed ? new Map() : this.assignAgyConvs(list, allPanes);
+    const kidsCache = new Map();
     const allKidsOf = (a) => {
       if (collapsed) return [];
+      if (kidsCache.has(a.address)) return kidsCache.get(a.address);
       const realKids = this.tree(all, a.address);
       const agyKids = agyMap.get(a.address) ?? [];
       if (realKids.length && agyKids.length) {
@@ -517,7 +554,9 @@ export default class AgentsAgy extends View {
           lastReal.lines[lastReal.lines.length - 1] = "├";
         }
       }
-      return [...realKids, ...agyKids];
+      const combined = [...realKids, ...agyKids];
+      kidsCache.set(a.address, combined);
+      return combined;
     };
 
     const urgency = new Map(list.map((a) => [
