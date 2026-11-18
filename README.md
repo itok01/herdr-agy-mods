@@ -26,15 +26,24 @@ Third-party mods and layout for [Herdr App](https://github.com/herdrdev/herdr-ap
 
 ## Installation
 
+Install both bundles (`agy` + `usage`), or pick only one:
+
 ```bash
+# Install everything (default -> generates layouts/main-agy.json)
 ./scripts/install.sh
+
+# Install only Codex / Claude quota & usage mods (-> layouts/main-usage.json)
+./scripts/install.sh --only usage
+
+# Install only Antigravity (agy) Swarm / Subagent mods (-> layouts/main-agy.json)
+./scripts/install.sh --only agy
 ```
 
-This stages and validates all mods with `herdr-app check` before copying them into `~/.config/herdr-app/mods/` (or `$HERDR_APP_HOME/mods/`), backs up any existing `layouts/main-agy.json` to `layouts/main-agy.json.bak`, and generates `layouts/main-agy.json` from `layouts/main.json`.
+The installer stages and validates the selected mods with `herdr-app check` before copying them into `~/.config/herdr-app/mods/` (or `$HERDR_APP_HOME/mods/`), backs up any existing target layout to `.bak`, and generates the layout from `layouts/main.json` (override with `--layout <name>`).
 
 ### Switching Layout & Shortcuts
 
-- Press **`⌘ + Shift + L`** (`layout.switch`) in Herdr App and select **`main-agy`**.
+- Press **`⌘ + Shift + L`** (`layout.switch`) in Herdr App and select **`main-agy`** (or **`main-usage`** if installed with `--only usage`).
 - Optional global shortcuts in `~/.config/herdr-app/keys.json`:
   ```json
   {
