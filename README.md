@@ -2,6 +2,22 @@
 
 Third-party mods and layout for [Herdr App](https://github.com/herdrdev/herdr-app) (`herdr-app`) adding **Antigravity CLI (`agy`)** Swarm/Subagent inspection and **Codex / Claude Code** quota monitoring across both local and SSH remote machines (`hc machine`).
 
+## Screenshots
+
+### Sidebar & Status Bar (`agents-agy` + `workspace-status-agy`)
+
+![Antigravity Swarm tree in sidebar and quota status bar](docs/screenshots/agy-main.png)
+
+### Model Usage & Quota (`model-usage`)
+
+![Codex and multi-profile Claude Code quota overlay](docs/screenshots/model-usage.png)
+
+### Agy Inspector — Swarm Board & Subagents (`agy-inspector`)
+
+| Swarm Board | Subagents |
+| --- | --- |
+| ![Agy Inspector Board tab](docs/screenshots/agy-inspector-board.png) | ![Agy Inspector Subagents tab](docs/screenshots/agy-inspector-subagents.png) |
+
 ## Included Mods
 
 1. **`agents-agy`** (`mods/agents-agy`)
