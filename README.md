@@ -9,7 +9,7 @@ Third-party mods and layout for [Herdr App](https://github.com/herdrdev/herdr-ap
    - Works across local (macOS `lsof`) and Linux remote (`/proc`) machines via `exec(..., { on: space.machine })`.
    - Clicking a nested row opens `agy-inspector` directly on the corresponding conversation and tab.
 2. **`agy-inspector`** (`mods/agy-inspector`)
-   - Overlay inspector for `agy` Swarm Roster, `Board` timeline, `Subagents` (expandable recent steps), `Transcript`, `Focus PTY`, and `hc send --` intervention to the bound parent `agy` PTY.
+   - Overlay inspector for `agy` Swarm Roster, `Board` timeline, `Subagents` (expandable recent steps), `Transcript`, `Focus PTY` button, and `hc send --` intervention to the bound parent `agy` PTY.
    - Keyboard shortcuts (when not typing in the input): `1` / `2` / `3` to switch tabs, `r` to refresh, `Esc` to close.
 3. **`workspace-status-agy`** (`mods/workspace-status-agy`)
    - Extends the bottom status bar with remaining quota indicators for **Codex** (`rate_limits` from `~/.codex/sessions`) and **Claude Code** (5h/7d remaining % per profile, auto-discovering `~/.claude*` and `CLAUDE_CONFIG_DIR` in `.envrc` / `mise.toml`).
@@ -68,12 +68,13 @@ The installer stages and validates the selected mods with `herdr-app check` befo
 
 ### Uninstall
 
-Switch back to the `main` layout (`⌘ + Shift + L`) and remove the installed mods:
+Switch back to the `main` layout (`⌘ + Shift + L`) and run:
 
 ```bash
-rm -rf ~/.config/herdr-app/mods/{agents-agy,agy-inspector,model-usage,workspace-status-agy} \
-       ~/.config/herdr-app/layouts/main-agy.json
+./scripts/install.sh --uninstall
 ```
+
+(This removes installed mods and generated `main-agy.json` / `main-usage.json` / `*.bak` layouts. Optionally remove cached quota files with `rm -rf ~/.cache/herdr`.)
 
 ## Verification
 

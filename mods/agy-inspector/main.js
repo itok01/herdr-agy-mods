@@ -197,7 +197,7 @@ function statusPill(phase, killed, t) {
       .child(div().size(6).rounded(3).bg(t.dim))
       .child(div().text_size(11).text_color(t.dim).child("killed"));
   }
-  if (p.includes("alive") || p.includes("work") || p.includes("run") || p.includes("active") || p.includes("progress")) {
+  if (p.includes("alive") || p.includes("work") || p.includes("run") || p.includes("active") || p.includes("progress") || p.includes("generat")) {
     return h_flex()
       .gap(5)
       .items_center()
@@ -251,7 +251,7 @@ export default class AgyInspector extends View {
     this.typing = false;
     this.message = this.focusedMember && this.boundTerminal ? `@${this.focusedMember} ` : "";
     this.handle = cx.focus_handle();
-    this.handle.focus();
+    if (p.overlay) this.handle.focus();
     this.input = InputState.new({ placeholder: "Send to parent agy PTY (e.g. @worker ...)..." });
     if (this.message) this.input.set_value(this.message);
     this.input.on("change", (_e, cx) => {
@@ -456,20 +456,22 @@ export default class AgyInspector extends View {
               )
               .child("Refresh")
           )
-          .child(
-            div()
-              .id("close-agy")
-              .p(4)
-              .rounded(6)
-              .text_color(t.dim)
-              .cursor_pointer()
-              .tooltip("Close (Esc)")
-              .hover((s) => s.bg(t.hover).text_color(t.foreground))
-              .on_click((_e, cx) => {
-                cx.stop_propagation();
-                closeOverlay();
-              })
-              .child(svg("mods/workspace-chrome/x.svg").size(13).flex_none())
+          .when(Boolean(props()?.overlay), (el) =>
+            el.child(
+              div()
+                .id("close-agy")
+                .p(4)
+                .rounded(6)
+                .text_color(t.dim)
+                .cursor_pointer()
+                .tooltip("Close (Esc)")
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  closeOverlay();
+                })
+                .child(svg("mods/workspace-chrome/x.svg").size(13).flex_none())
+            )
           )
       )
       .when(Boolean(this.error), (e) =>

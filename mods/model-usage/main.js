@@ -1,6 +1,6 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, exec, theme, checking, closeOverlay } from "herdr";
+import { spaces, exec, theme, checking, closeOverlay, props } from "herdr";
 
 const PY_USAGE = `
 import hashlib, json, os, re, subprocess, sys, time, urllib.request
@@ -9,6 +9,12 @@ from pathlib import Path
 
 def read_json(p):
     try: return json.loads(p.read_text("utf-8"))
+    except Exception: return None
+
+def parse_iso_ts(s):
+    if not isinstance(s, str): return None
+    s = re.sub(r"\\.\\d+", "", s).replace("Z", "+00:00")
+    try: return datetime.fromisoformat(s).timestamp()
     except Exception: return None
 
 def fmt_win(m):
@@ -81,12 +87,6 @@ if (codex_dir / "sessions").is_dir():
             if codex["rate_limits"] and codex["tokens"]: break
         if codex["rate_limits"] and codex["tokens"]: break
 
-def parse_iso_ts(s):
-    if not isinstance(s, str): return None
-    s = re.sub(r"\\.\\d+", "", s).replace("Z", "+00:00")
-    try: return datetime.fromisoformat(s).timestamp()
-    except Exception: return None
-
 profiles = {}
 seen_paths = set()
 def add_profile(label, path_obj):
@@ -123,9 +123,12 @@ for parent_dir in [root / "Projects", root / "projects", root / "src", root / "w
                     if not sline or sline.startswith("#"): continue
                     m = re.search(r"CLAUDE_CONFIG_DIR\\s*=\\s*[\\x22\\x27]?([^\\s\\x22\\x27#]+)", sline)
                     if m:
-                        raw_p = m.group(1).replace("{{env.HOME}}", str(root)).replace("\x24{HOME}", str(root)).replace("$HOME", str(root))
+                        raw_p = os.path.expandvars(m.group(1).replace("{{env.HOME}}", str(root)).replace("\x24{HOME}", str(root)).replace("$HOME", str(root)))
                         raw_p = re.sub(r"^~(?=/|$)", str(root), raw_p)
-                        add_profile(sub.name, Path(raw_p))
+                        p_obj = Path(raw_p)
+                        if not p_obj.is_absolute():
+                            p_obj = (cfg.parent / p_obj).resolve()
+                        add_profile(sub.name, p_obj)
             except Exception: pass
 
 def read_claude_token(cdir):
@@ -148,28 +151,58 @@ def read_claude_token(cdir):
 
 def write_private_json(p, obj):
     p.parent.mkdir(parents=True, exist_ok=True)
+    if p.parent.is_symlink():
+        return
     try: os.chmod(p.parent, 0o700)
     except Exception: pass
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(p, flags, 0o600)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    try:
+        if tmp.exists() or tmp.is_symlink(): tmp.unlink()
+    except Exception: pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(obj, f)
+    os.replace(tmp, p)
+
+def hydrate_limits(items, stale=False):
+    out = []
+    for item in items:
+        if not isinstance(item, dict): continue
+        rst_ts = item.get("resets_at")
+        rst_str = item.get("reset_in") or (fmt_rst(rst_ts, now) if rst_ts else "-")
+        entry = {
+            "label": item.get("label"),
+            "used_percent": item.get("used_percent"),
+            "remaining_percent": item.get("remaining_percent"),
+            "resets_at": rst_ts,
+            "reset_in": rst_str,
+        }
+        if stale or item.get("stale"):
+            entry["stale"] = True
+        out.append(entry)
+    return out
 
 def fetch_claude_limits(cdir):
     if "--no-oauth" in sys.argv[1:] or os.environ.get("HERDR_CLAUDE_OAUTH_QUOTA") == "0":
         return []
     cache_dir = root / ".cache/herdr"
+    if cache_dir.is_symlink():
+        return []
     cache_p = cache_dir / f"claude-limits-{hashlib.sha256(str(cdir).encode()).hexdigest()[:8]}.json"
     cached_data = None
     try:
         if cache_p.is_file() and not cache_p.is_symlink():
             cached_data = json.loads(cache_p.read_text("utf-8"))
             if (now - cache_p.stat().st_mtime) < 60 and isinstance(cached_data, list):
-                return cached_data
+                return hydrate_limits(cached_data)
     except Exception:
         cached_data = None
     tok = read_claude_token(cdir)
     if not tok:
+        if not cached_data:
+            try: write_private_json(cache_p, [])
+            except Exception: pass
         return []
     try:
         req = urllib.request.Request(
@@ -184,13 +217,18 @@ def fetch_claude_limits(cdir):
             if isinstance(w, dict) and w.get("utilization") is not None:
                 u = float(w["utilization"])
                 rst_ts = parse_iso_ts(w.get("resets_at"))
-                limits.append({"label": lbl, "used_percent": u, "remaining_percent": round(max(0.0, 100.0 - u), 1), "reset_in": fmt_rst(rst_ts, now)})
+                limits.append({
+                    "label": lbl,
+                    "used_percent": u,
+                    "remaining_percent": round(max(0.0, 100.0 - u), 1),
+                    "resets_at": rst_ts,
+                })
         try: write_private_json(cache_p, limits)
         except Exception: pass
-        return limits
+        return hydrate_limits(limits)
     except Exception:
         if isinstance(cached_data, list) and cached_data:
-            return [{**item, "stale": True} for item in cached_data if isinstance(item, dict)]
+            return hydrate_limits(cached_data, stale=True)
         return []
 
 claude_profiles = {}
@@ -301,7 +339,7 @@ export default class ModelUsage extends View {
     this.loadingMachines = new Set();
     this.reqSeqByMachine = {};
     this.handle = cx.focus_handle();
-    this.handle.focus();
+    if (props()?.overlay) this.handle.focus();
     if (checking()) return;
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
@@ -419,20 +457,22 @@ export default class ModelUsage extends View {
               )
               .child("Refresh")
           )
-          .child(
-            div()
-              .id("close-usage")
-              .p(4)
-              .rounded(6)
-              .text_color(t.dim)
-              .cursor_pointer()
-              .tooltip("Close (Esc)")
-              .hover((s) => s.bg(t.hover).text_color(t.foreground))
-              .on_click((_e, cx) => {
-                cx.stop_propagation();
-                closeOverlay();
-              })
-              .child(svg("mods/workspace-chrome/x.svg").size(13).flex_none())
+          .when(Boolean(props()?.overlay), (el) =>
+            el.child(
+              div()
+                .id("close-usage")
+                .p(4)
+                .rounded(6)
+                .text_color(t.dim)
+                .cursor_pointer()
+                .tooltip("Close (Esc)")
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  closeOverlay();
+                })
+                .child(svg("mods/workspace-chrome/x.svg").size(13).flex_none())
+            )
           )
       )
       .when(Boolean(err), (e) =>

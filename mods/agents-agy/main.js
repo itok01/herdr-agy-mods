@@ -90,6 +90,15 @@ live_map = live_agy_convs()
 for d in brain.iterdir():
     sg = d / ".system_generated"
     if not (d.is_dir() and sg.is_dir()): continue
+    tr_path = sg / "logs/transcript.jsonl"
+    try:
+        mtime = tr_path.stat().st_mtime if tr_path.exists() else d.stat().st_mtime
+    except Exception:
+        continue
+    active_lock = d.name in live_map
+    # Skip stale conversations before reading members/subagents JSON
+    if not active_lock and (now - mtime) > 21600:
+        continue
     mem_raw = read_json(sg / "swarm/members.json")
     if not isinstance(mem_raw, dict):
         mem_raw = {}
@@ -98,13 +107,6 @@ for d in brain.iterdir():
     has_swarm = isinstance(members_dict, dict) and bool(members_dict)
     has_subs = subs_dir.is_dir() and any(subs_dir.glob("*.json"))
     if not (has_swarm or has_subs): continue
-
-    tr_path = sg / "logs/transcript.jsonl"
-    mtime = tr_path.stat().st_mtime if tr_path.exists() else d.stat().st_mtime
-    active_lock = d.name in live_map
-    # Show active conversations or ones updated in the last 6 hours
-    if not active_lock and (now - mtime) > 21600:
-        continue
 
     hint_text = str(mem_raw.get("title") or "")
     for row in tail_jsonl(tr_path, 10):

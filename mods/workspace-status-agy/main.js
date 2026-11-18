@@ -103,9 +103,12 @@ for parent_dir in [root / "Projects", root / "projects", root / "src", root / "w
                     if not sline or sline.startswith("#"): continue
                     m = re.search(r"CLAUDE_CONFIG_DIR\\s*=\\s*[\\x22\\x27]?([^\\s\\x22\\x27#]+)", sline)
                     if m:
-                        raw_p = m.group(1).replace("{{env.HOME}}", str(root)).replace("\x24{HOME}", str(root)).replace("$HOME", str(root))
+                        raw_p = os.path.expandvars(m.group(1).replace("{{env.HOME}}", str(root)).replace("\x24{HOME}", str(root)).replace("$HOME", str(root)))
                         raw_p = re.sub(r"^~(?=/|$)", str(root), raw_p)
-                        add_profile(sub.name, Path(raw_p))
+                        p_obj = Path(raw_p)
+                        if not p_obj.is_absolute():
+                            p_obj = (cfg.parent / p_obj).resolve()
+                        add_profile(sub.name, p_obj)
             except Exception: pass
 
 def read_claude_token(cdir):
@@ -126,19 +129,34 @@ def read_claude_token(cdir):
         except Exception: pass
     return None
 
+def parse_iso_ts(s):
+    if not isinstance(s, str): return None
+    s = re.sub(r"\\.\\d+", "", s).replace("Z", "+00:00")
+    try: return datetime.fromisoformat(s).timestamp()
+    except Exception: return None
+
 def write_private_json(p, obj):
     p.parent.mkdir(parents=True, exist_ok=True)
+    if p.parent.is_symlink():
+        return
     try: os.chmod(p.parent, 0o700)
     except Exception: pass
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(p, flags, 0o600)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    try:
+        if tmp.exists() or tmp.is_symlink(): tmp.unlink()
+    except Exception: pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(obj, f)
+    os.replace(tmp, p)
 
 def fetch_claude_quota(cdir):
     if "--no-oauth" in sys.argv[1:] or os.environ.get("HERDR_CLAUDE_OAUTH_QUOTA") == "0":
         return None
     cache_dir = root / ".cache/herdr"
+    if cache_dir.is_symlink():
+        return None
     cache_p = cache_dir / f"claude-limits-{hashlib.sha256(str(cdir).encode()).hexdigest()[:8]}.json"
     cached_list = None
     try:
@@ -151,6 +169,9 @@ def fetch_claude_quota(cdir):
         cached_list = None
     tok = read_claude_token(cdir)
     if not tok:
+        if not cached_list:
+            try: write_private_json(cache_p, [])
+            except Exception: pass
         return None
     try:
         req = urllib.request.Request(
@@ -166,8 +187,9 @@ def fetch_claude_quota(cdir):
             if isinstance(w, dict) and w.get("utilization") is not None:
                 u = float(w["utilization"])
                 rem = round(max(0.0, 100.0 - u), 1)
+                rst_ts = parse_iso_ts(w.get("resets_at"))
                 rem_vals.append(round(rem))
-                limits.append({"label": lbl, "used_percent": u, "remaining_percent": rem, "reset_in": "-"})
+                limits.append({"label": lbl, "used_percent": u, "remaining_percent": rem, "resets_at": rst_ts})
         try: write_private_json(cache_p, limits)
         except Exception: pass
         return {"rem": min(rem_vals) if rem_vals else None}
