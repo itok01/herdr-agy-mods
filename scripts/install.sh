@@ -7,24 +7,31 @@ LAYOUTS_DIR="$APP_HOME/layouts"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-ONLY="all"
+ONLY=""
 LAYOUT_NAME=""
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/install.sh [--only all|agy|usage] [--layout <name>]
+Usage: ./scripts/install.sh [all|agy|usage] [--layout <name>]
+
+Targets:
+  all    Install both bundles (agy + usage) [default in non-interactive mode]
+  agy    Install only Antigravity (agy) mods: agents-agy, agy-inspector
+  usage  Install only Quota/Usage mods: workspace-status-agy, model-usage
 
 Options:
-  --only all    Install all mods (agy + usage) [default]
-  --only agy    Install only Antigravity (agy) mods: agents-agy, agy-inspector
-  --only usage  Install only Quota/Usage mods: workspace-status-agy, model-usage
-  --layout NAME Output layout name under layouts/ (default: main-agy, or main-usage for --only usage)
-  -h, --help    Show this help
+  --only TARGET  Same as positional [all|agy|usage]
+  --layout NAME  Output layout name under layouts/ (default: main-agy, or main-usage for usage)
+  -h, --help     Show this help
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    all|agy|usage)
+      ONLY="$1"
+      shift
+      ;;
     --only)
       [ "$#" -ge 2 ] || { echo "Error: --only requires a value (all|agy|usage)" >&2; exit 1; }
       ONLY="$2"
@@ -54,6 +61,25 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ -z "$ONLY" ]; then
+  if [ -t 0 ]; then
+    echo "Select which mod bundle to install:"
+    echo "  1) Both (agy + usage) [default]"
+    echo "  2) Quota / Usage only (Codex & Claude)"
+    echo "  3) Antigravity (agy) only (Swarm & Subagents)"
+    printf "Choice [1-3]: "
+    read -r choice
+    case "$choice" in
+      ""|1|all) ONLY="all" ;;
+      2|usage)  ONLY="usage" ;;
+      3|agy)    ONLY="agy" ;;
+      *)        echo "Error: Invalid choice: $choice" >&2; exit 1 ;;
+    esac
+  else
+    ONLY="all"
+  fi
+fi
 
 case "$ONLY" in
   all)
