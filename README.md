@@ -26,9 +26,12 @@ Third-party mods and layout for [Herdr App](https://github.com/herdrdev/herdr-ap
 
 ## Installation
 
-Run `./scripts/install.sh` (interactive prompt lets you choose when run in a terminal), or pass the target directly:
+Run `./scripts/install.sh` (interactive menu when run in a terminal), or pass bundles / individual mod names directly:
 
 ```bash
+# List all available mods and bundles
+./scripts/install.sh --list
+
 # Install everything (default in non-interactive mode -> layouts/main-agy.json)
 ./scripts/install.sh all
 
@@ -37,6 +40,9 @@ Run `./scripts/install.sh` (interactive prompt lets you choose when run in a ter
 
 # Install only Antigravity (agy) Swarm / Subagent mods (-> layouts/main-agy.json)
 ./scripts/install.sh agy
+
+# Install specific individual mod(s)
+./scripts/install.sh model-usage workspace-status-agy
 ```
 
 The installer stages and validates the selected mods with `herdr-app check` before copying them into `~/.config/herdr-app/mods/` (or `$HERDR_APP_HOME/mods/`), backs up any existing target layout to `.bak`, and generates the layout from `layouts/main.json` (override with `--layout <name>`).
