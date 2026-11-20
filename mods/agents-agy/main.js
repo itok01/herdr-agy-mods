@@ -528,6 +528,16 @@ export default class AgentsAgy extends View {
       .child(this.status(t, { status: st }, compact));
   }
 
+  quickApprove(a) {
+    if (checking()) return;
+    const cached = shared("approve.guard.cache")?.[a.address];
+    if (cached && cached.verdict !== "safe") {
+      run("mod.open", { name: "approve-guard" });
+      return;
+    }
+    setShared("approve.guard.cmd", { op: "approve_safe", address: a.address, ts: Date.now() });
+  }
+
   status(t, a, compact = false) {
     const color = t[a.status] ?? t.dim;
     if (a.status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
@@ -700,6 +710,50 @@ export default class AgentsAgy extends View {
         .when(subs.length > 0, (el) => el.child(fold(a, subs)))
         .when(this.hovered === a.address, (el) => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
+        .when((shared("approve.guard")?.agents?.[a.address] ?? shared("approve.guard")?.mode) === "safe", (el) =>
+          el.child(
+            div()
+              .id(`auto-badge-${a.address}`)
+              .px(4)
+              .py(1)
+              .rounded(3)
+              .bg(t.working + "22")
+              .text_size(9.5)
+              .font_semibold()
+              .text_color(t.working)
+              .cursor_pointer()
+              .tooltip("Auto-approve (Safe) active — click to configure")
+              .on_click((_e, c) => {
+                c.stop_propagation();
+                run("mod.open", { name: "approve-guard" });
+              })
+              .child("AUTO")
+          )
+        )
+        .when(a.status === "blocked", (el) =>
+          el.child(
+            div()
+              .id(`quick-approve-${a.address}`)
+              .px(5)
+              .h(18)
+              .rounded(4)
+              .bg(t.working + "26")
+              .text_size(11)
+              .font_bold()
+              .text_color(t.working)
+              .flex()
+              .items_center()
+              .cursor_pointer()
+              .tooltip("One-click safe approve (opens Approve Guard if unsafe)")
+              .hover((s) => s.bg(t.working + "40"))
+              .on_click((_e, c) => {
+                c.stop_propagation();
+                this.quickApprove(a);
+                c.notify();
+              })
+              .child("✓")
+          )
+        )
         .child(this.status(t, a, byPriority && !isPinned));
     };
 

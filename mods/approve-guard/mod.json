@@ -1,0 +1,8 @@
+{
+  "place": "pane",
+  "title": "Approve Guard",
+  "overlay": {
+    "width": 600,
+    "height": 480
+  }
+}

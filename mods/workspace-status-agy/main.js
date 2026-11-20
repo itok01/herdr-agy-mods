@@ -1,6 +1,16 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, exec, checking } from "herdr";
+import { spaces, agents, theme, run, window, keys, exec, checking, hc, shared, setShared } from "herdr";
+import {
+  GUARD_KEY,
+  GUARD_CACHE_KEY,
+  GUARD_CMD_KEY,
+  GUARD_LOCK_KEY,
+  classifyPrompt,
+  getEffectiveMode,
+  normalizeGuardState,
+  withAuditEntry,
+} from "./safety.js";
 
 const PY_STATUS_BAR = `
 import hashlib, json, os, re, subprocess, sys, time, urllib.request
@@ -234,9 +244,161 @@ export default class WorkspaceStatusAgy extends View {
     this.usageByMachine = {};
     this.lastMachine = undefined;
     this.loadingMachines = new Set();
+    this.guardTickRunning = false;
+    this.guardCooldown = new Map();
     if (!checking()) {
       this.refresh(cx);
-      cx.timer.every(15000, (cx) => this.refresh(cx));
+      cx.timer.every(15000, (c) => this.refresh(c));
+      cx.timer.every(2000, (c) => this.tickApproveGuard(c));
+    }
+  }
+
+  acquireLock(addr, ttlMs = 10000) {
+    const now = Date.now();
+    const locks = { ...(shared(GUARD_LOCK_KEY) || {}) };
+    if ((locks[addr] || 0) > now) return false;
+    locks[addr] = now + ttlMs;
+    setShared(GUARD_LOCK_KEY, locks);
+    return true;
+  }
+
+  releaseLock(addr) {
+    const locks = { ...(shared(GUARD_LOCK_KEY) || {}) };
+    if (addr in locks) {
+      delete locks[addr];
+      setShared(GUARD_LOCK_KEY, locks);
+    }
+  }
+
+  async inspectAddress(addr) {
+    try {
+      const res = await hc(["read", addr]);
+      if (res.code !== 0) {
+        return { verdict: "review", reason: `hc read failed (exit ${res.code})`, snippet: "" };
+      }
+      return classifyPrompt(res.stdout || "");
+    } catch (e) {
+      return { verdict: "review", reason: `hc read error: ${String(e)}`, snippet: "" };
+    }
+  }
+
+  async approveIfVerified(a, allowUnsafe = false) {
+    if (!this.acquireLock(a.address)) return false;
+    try {
+      const info = await this.inspectAddress(a.address);
+      const label = a.title || a.program?.name || a.address;
+      if (info.verdict !== "safe" && !allowUnsafe) {
+        setShared(GUARD_KEY, withAuditEntry(shared(GUARD_KEY), {
+          address: a.address,
+          label,
+          action: "skipped",
+          verdict: info.verdict,
+          reason: info.reason,
+        }));
+        return false;
+      }
+
+      // Re-verify agent is still blocked and (if auto) mode is still safe right before sending keys.
+      const stillBlocked = agents().some((x) => x.address === a.address && x.status === "blocked");
+      if (!stillBlocked) return false;
+      if (!allowUnsafe) {
+        const curState = normalizeGuardState(shared(GUARD_KEY));
+        if (getEffectiveMode(curState, a.address) !== "safe") return false;
+      }
+
+      const sent = await hc(["keys", a.address, "enter"]);
+      if (sent.code === 0) {
+        setShared(GUARD_KEY, withAuditEntry(shared(GUARD_KEY), {
+          address: a.address,
+          label,
+          action: "approved",
+          verdict: info.verdict,
+          reason: info.reason,
+        }));
+        return true;
+      }
+      return false;
+    } finally {
+      this.releaseLock(a.address);
+    }
+  }
+
+  async tickApproveGuard(cx) {
+    if (checking() || this.guardTickRunning) return;
+    this.guardTickRunning = true;
+    try {
+      const blocked = agents().filter((a) => a.status === "blocked");
+      const blockedSet = new Set(blocked.map((a) => a.address));
+      for (const k of this.guardCooldown.keys()) {
+        if (!blockedSet.has(k)) this.guardCooldown.delete(k);
+      }
+
+      // Handle explicit command requests from sidebar or Approve Guard overlay
+      const cmd = shared(GUARD_CMD_KEY);
+      if (cmd && cmd.op) {
+        setShared(GUARD_CMD_KEY, null);
+        if (cmd.op === "approve_safe" && cmd.address) {
+          const target = blocked.find((a) => a.address === cmd.address);
+          if (target) {
+            const info = await this.inspectAddress(target.address);
+            if (info.verdict === "safe") {
+              await this.approveIfVerified(target, true);
+            } else {
+              run("mod.open", { name: "approve-guard" });
+            }
+          }
+        } else if (cmd.op === "approve_all_safe") {
+          for (const a of blocked) {
+            const info = await this.inspectAddress(a.address);
+            if (info.verdict === "safe") {
+              await this.approveIfVerified(a, true);
+            }
+          }
+        }
+      }
+
+      if (!blocked.length) {
+        if (Object.keys(shared(GUARD_CACHE_KEY) || {}).length > 0) {
+          setShared(GUARD_CACHE_KEY, {});
+        }
+        return;
+      }
+
+      const state = normalizeGuardState(shared(GUARD_KEY));
+      const hasAnySafe = state.mode === "safe" || Object.values(state.agents).some((v) => v === "safe");
+      const forceInspect = cmd?.op === "refresh";
+      if (!hasAnySafe && !forceInspect) return;
+
+      const cache = { ...(shared(GUARD_CACHE_KEY) || {}) };
+      let cacheChanged = false;
+      for (const k of Object.keys(cache)) {
+        if (!blockedSet.has(k)) {
+          delete cache[k];
+          cacheChanged = true;
+        }
+      }
+
+      for (const a of blocked) {
+        const now = Date.now();
+        if (!forceInspect && now - (this.guardCooldown.get(a.address) ?? 0) < 8000) continue;
+        this.guardCooldown.set(a.address, now);
+
+        const info = await this.inspectAddress(a.address);
+        const prev = cache[a.address];
+        if (!prev || prev.verdict !== info.verdict || prev.reason !== info.reason || prev.snippet !== info.snippet) {
+          cache[a.address] = { ...info, ts: now };
+          cacheChanged = true;
+        }
+
+        if (getEffectiveMode(state, a.address) === "safe") {
+          await this.approveIfVerified(a, false);
+        }
+      }
+
+      if (cacheChanged) setShared(GUARD_CACHE_KEY, cache);
+      cx.notify();
+    } finally {
+      this.guardTickRunning = false;
     }
   }
 
@@ -300,6 +462,11 @@ export default class WorkspaceStatusAgy extends View {
       : null;
     const healthColor = (pct, stale) => (stale ? t.dim : pct <= 15 ? t.blocked : pct <= 30 ? t.accent : t.working);
 
+    const guard = shared("approve.guard");
+    const guardPerCount = guard?.agents ? Object.values(guard.agents).filter((v) => v === "safe").length : 0;
+    const guardActive = guard?.mode === "safe" || guardPerCount > 0;
+    const guardText = guard?.mode === "safe" ? "Guard: SAFE" : guardPerCount > 0 ? `Guard: ${guardPerCount} auto` : "Guard: OFF";
+
     return h_flex()
       .size_full()
       .px(14)
@@ -321,6 +488,25 @@ export default class WorkspaceStatusAgy extends View {
           .when(needs > 0, (el) => el.child(div().text_color(t.blocked).child(`· ${needs} ${needs === 1 ? "needs" : "need"} you`)))
       )
       .child(div().flex_1())
+      .child(
+        h_flex()
+          .id("status-approve-guard")
+          .gap(5)
+          .items_center()
+          .px(6)
+          .py(1)
+          .rounded(4)
+          .text_color(needs > 0 ? t.blocked : guardActive ? t.working : t.dim)
+          .cursor_pointer()
+          .tooltip("Approve Guard — click to open permissions & audit log")
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            run("mod.open", { name: "approve-guard" });
+          })
+          .child(div().size(5).rounded(3).flex_none().bg(needs > 0 ? t.blocked : guardActive ? t.working : t.dim))
+          .child(guardText)
+      )
       .when(Boolean(codexText), (el) =>
         el.child(
           h_flex()

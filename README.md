@@ -33,6 +33,10 @@ Third-party mods and layout for [Herdr App](https://github.com/herdrdev/herdr-ap
 4. **`model-usage`** (`mods/model-usage`)
    - Overlay showing Codex CLI quota/session tokens and per-profile Claude Code 5h/7d quota bars, reset countdowns, and 5h/24h token usage.
    - Keyboard shortcuts: `r` to refresh, `Esc` to close.
+5. **`approve-guard`** (`mods/approve-guard`)
+   - Safety-filtered one-click approval & Auto-approve mod (global or per-agent), integrated with the `agents-agy` sidebar (`✓` / `AUTO` badges) and `workspace-status-agy` status bar (`Guard: OFF / SAFE` pill).
+   - Inspects blocked terminal output via `hc read` before sending `Enter`: auto-approves standard permission prompts while blocking destructive commands (`rm -rf`, `git push --force`, `sudo`, `DROP TABLE`, `curl | sh`, credential paths) and interactive questions.
+   - Keyboard shortcuts: `r` to refresh, `Esc` to close.
 
 ## Requirements
 
