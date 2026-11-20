@@ -65,15 +65,33 @@ export function tailLines(raw, maxLines = 20) {
 }
 
 /**
+ * Detect which key confirms the active prompt ("ctrl+k" for agy, "enter" for Claude/Codex).
+ * @param {string[]} lines
+ * @returns {"ctrl+k" | "enter"}
+ */
+export function detectApproveKey(lines) {
+  const footer = lines.slice(-6).join("\n");
+  if (/\bctrl\s*\+\s*k\b|\^K\b/i.test(footer)) return "ctrl+k";
+  return "enter";
+}
+
+/**
  * Extract the active command from a recognized permission prompt block.
  * Returns null if no active permission prompt block is found or if truncated.
  * @param {string[]} lines
- * @returns {{ kind: "command", command: string } | { kind: "truncated" } | null}
+ * @returns {{ kind: "command", command: string } | { kind: "truncated" } | { kind: "multiline", command: string } | null}
  */
 function extractActiveCommandPrompt(lines) {
   let headerIdx = -1;
+  let isRequestingFor = false;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (/would you like to run the following command\?/i.test(lines[i])) {
+    const trimmed = lines[i].trim();
+    if (/^requesting permission for:$/i.test(trimmed)) {
+      headerIdx = i;
+      isRequestingFor = true;
+      break;
+    }
+    if (/would you like to run the following command\?|^(?:run|execute)\s+command\b/i.test(trimmed)) {
       headerIdx = i;
       break;
     }
@@ -87,18 +105,18 @@ function extractActiveCommandPrompt(lines) {
   }
 
   // Require an active confirmation footer after the header so stale scrollback doesn't match.
-  const hasFooter = block.some((l) => /1\.\s*yes,\s*proceed|press enter to confirm/i.test(l));
+  const hasFooter = block.some((l) => /1\.\s*yes,\s*(?:proceed|run command)|run this command\?|press enter to confirm|\bctrl\s*\+\s*k\b|\^K\b/i.test(l));
   if (!hasFooter) return null;
 
   const cmdLines = [];
-  let inCmd = false;
+  let inCmd = isRequestingFor;
   for (let i = 1; i < block.length; i++) {
     const t = block[i].trim();
-    if (/^(?:›\s*)?1\.\s*yes|press enter to confirm/i.test(t)) break;
+    if (/^(?:›|>)?\s*1\.\s*yes|run this command\?|press enter to confirm|\bctrl\s*\+\s*k\b|\^K\b/i.test(t)) break;
     if (t.startsWith("$ ")) {
       inCmd = true;
       cmdLines.push(t.slice(2).trim());
-    } else if (inCmd) {
+    } else if (inCmd && t.length > 0) {
       cmdLines.push(t);
     }
   }
@@ -110,52 +128,53 @@ function extractActiveCommandPrompt(lines) {
 /**
  * Classify a blocked terminal's recent screen text using an allowlist-first policy.
  * @param {string} rawScreen
- * @returns {{ verdict: "safe" | "unsafe" | "question" | "review", reason: string, snippet: string }}
+ * @returns {{ verdict: "safe" | "unsafe" | "question" | "review", reason: string, snippet: string, approveKey: "ctrl+k" | "enter" }}
  */
 export function classifyPrompt(rawScreen) {
   const lines = tailLines(rawScreen, 20);
   const text = lines.join("\n");
   const snippet = lines.slice(-6).join("\n");
+  const approveKey = detectApproveKey(lines);
 
   if (!text.trim()) {
-    return { verdict: "review", reason: "Empty terminal output", snippet: "" };
+    return { verdict: "review", reason: "Empty terminal output", snippet: "", approveKey: "enter" };
   }
 
   for (const rule of QUESTION_OR_ESCALATION_RE) {
     if (rule.re.test(text)) {
-      return { verdict: "question", reason: rule.reason, snippet };
+      return { verdict: "question", reason: rule.reason, snippet, approveKey };
     }
   }
 
   const extracted = extractActiveCommandPrompt(lines);
   if (!extracted) {
-    return { verdict: "review", reason: "No recognized active permission prompt — review manually", snippet };
+    return { verdict: "review", reason: "No recognized active permission prompt — review manually", snippet, approveKey };
   }
   if (extracted.kind === "truncated") {
-    return { verdict: "review", reason: "Truncated command output — review manually", snippet };
+    return { verdict: "review", reason: "Truncated command output — review manually", snippet, approveKey };
   }
   if (extracted.kind === "multiline") {
-    return { verdict: "review", reason: "Multiline command — review manually", snippet };
+    return { verdict: "review", reason: "Multiline command — review manually", snippet, approveKey };
   }
 
   const cmd = extracted.command.trim();
   for (const rule of UNSAFE_LITERAL_RE) {
     if (rule.re.test(cmd)) {
-      return { verdict: "unsafe", reason: rule.reason, snippet };
+      return { verdict: "unsafe", reason: rule.reason, snippet, approveKey };
     }
   }
 
   if (SHELL_META_RE.test(cmd)) {
-    return { verdict: "unsafe", reason: "Shell chaining/redirection/subshell not allowed in auto-approve", snippet };
+    return { verdict: "unsafe", reason: "Shell chaining/redirection/subshell not allowed in auto-approve", snippet, approveKey };
   }
 
   for (const allowRe of SAFE_READONLY_OR_TEST_COMMANDS) {
     if (allowRe.test(cmd)) {
-      return { verdict: "safe", reason: `Allowlisted command: ${cmd.slice(0, 60)}`, snippet };
+      return { verdict: "safe", reason: `Allowlisted command: ${cmd.slice(0, 60)}`, snippet, approveKey };
     }
   }
 
-  return { verdict: "review", reason: `Command not in safe allowlist: ${cmd.slice(0, 60)}`, snippet };
+  return { verdict: "review", reason: `Command not in safe allowlist: ${cmd.slice(0, 60)}`, snippet, approveKey };
 }
 
 /**

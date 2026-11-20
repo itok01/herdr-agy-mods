@@ -306,14 +306,15 @@ export default class WorkspaceStatusAgy extends View {
         if (getEffectiveMode(curState, a.address) !== "safe") return false;
       }
 
-      const sent = await hc(["keys", a.address, "enter"]);
+      const key = info.approveKey === "ctrl+k" ? "ctrl+k" : "enter";
+      const sent = await hc(["keys", a.address, key]);
       if (sent.code === 0) {
         setShared(GUARD_KEY, withAuditEntry(shared(GUARD_KEY), {
           address: a.address,
           label,
           action: "approved",
           verdict: info.verdict,
-          reason: info.reason,
+          reason: `[${key}] ${info.reason}`,
         }));
         return true;
       }

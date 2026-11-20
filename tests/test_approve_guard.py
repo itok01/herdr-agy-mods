@@ -52,6 +52,7 @@ console.log(JSON.stringify(out));
             "Would you like to run the following command?\n$ git status -s\n1. Yes, proceed (y)",
             "Would you like to run the following command?\n$ rg -n classifyPrompt mods/\nPress enter to confirm",
             "Would you like to run the following command?\n$ find mods -maxdepth 2 -name main.js\n1. Yes, proceed (y)",
+            "Command\n\nRequesting permission for:\n  git status -s\n\nRun this command?\n> 1. Yes, run command\n  2. No, cancel",
         ]
         for p in prompts:
             res = self.run_js(f"s.classifyPrompt({json.dumps(p)})")
@@ -88,6 +89,19 @@ console.log(JSON.stringify(out));
         for p, expected in cases:
             res = self.run_js(f"s.classifyPrompt({json.dumps(p)})")
             self.assertEqual(res["verdict"], expected, f"Expected {expected} for: {p!r}, got {res}")
+
+    def test_agy_ctrl_k_detection(self):
+        agy_safe = self.run_js('s.classifyPrompt("Run command\\n$ pytest tests/\\nPress Ctrl+K to allow")')
+        self.assertEqual(agy_safe["verdict"], "safe")
+        self.assertEqual(agy_safe["approveKey"], "ctrl+k")
+
+        agy_unsafe = self.run_js('s.classifyPrompt("Run command\\n$ rm -rf /tmp/x\\nPress Ctrl+K to allow")')
+        self.assertEqual(agy_unsafe["verdict"], "unsafe")
+        self.assertEqual(agy_unsafe["approveKey"], "ctrl+k")
+
+        agy_rev = self.run_js('s.classifyPrompt("Run command\\n$ npm install foo\\nPress Ctrl+K to allow")')
+        self.assertEqual(agy_rev["verdict"], "review")
+        self.assertEqual(agy_rev["approveKey"], "ctrl+k")
 
     def test_effective_mode_and_deduplicated_audit_log(self):
         res = self.run_js("""

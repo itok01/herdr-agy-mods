@@ -120,7 +120,8 @@ export default class ApproveGuard extends View {
         this.note = `${agentLabel(a)} is no longer blocked`;
         return;
       }
-      const res = await hc(["keys", a.address, "enter"]);
+      const key = info?.approveKey === "ctrl+k" ? "ctrl+k" : "enter";
+      const res = await hc(["keys", a.address, key]);
       if (res.code === 0) {
         const cur = this.readState();
         const entry = {
@@ -129,10 +130,10 @@ export default class ApproveGuard extends View {
           label: agentLabel(a),
           action: "approved",
           verdict: info?.verdict || "manual",
-          reason: `Manual approve: ${info?.reason || "Sent Enter"}`,
+          reason: `Manual [${key}]: ${info?.reason || "Sent key"}`,
         };
         this.writeState({ ...cur, log: [entry, ...cur.log].slice(0, MAX_AUDIT_LOG) });
-        this.note = `Sent Enter to ${agentLabel(a)}`;
+        this.note = `Sent ${key} to ${agentLabel(a)}`;
       } else {
         this.note = res.stderr || `hc keys exit ${res.code}`;
       }
@@ -222,10 +223,10 @@ export default class ApproveGuard extends View {
                 isBusy
                   ? "Sending..."
                   : needsConfirm
-                    ? "Confirm UNSAFE Enter"
+                    ? `Confirm UNSAFE (${info?.approveKey === "ctrl+k" ? "Ctrl+K" : "Enter"})`
                     : info.verdict === "unsafe"
-                      ? "Approve Anyway (Enter)"
-                      : "Approve (Enter)"
+                      ? `Approve Anyway (${info?.approveKey === "ctrl+k" ? "Ctrl+K" : "Enter"})`
+                      : `Approve (${info?.approveKey === "ctrl+k" ? "Ctrl+K" : "Enter"})`
               )
           )
           .child(
